@@ -14,6 +14,34 @@ pub fn capture_parameter(text: &str) -> regex::CaptureMatches {
     RE.captures_iter(text)
 }
 
+// same TODO as above.. should we allow custom/dynamic ways
+// to detect default variable substitutions?
+pub fn capture_default(text: &str) -> regex::CaptureMatches {
+    lazy_static! {
+        static ref RE: Regex = Regex::new(r"(..*?)\x20\|\x20(..*?)$").unwrap();
+    }
+    RE.captures_iter(text)
+}
+
+pub fn try_get_default(key: &str) -> Option<(String, String)> {
+    let mut default_replace: Option<(String, String)> = None;
+    for default_cap in capture_default(key) {
+        // for capturing default, we assume the capture
+        // group should only contain:
+        // [0]: the_origina_key | default value
+        // [1]: the_origina_key
+        // [2]: default value
+        if default_cap.len() == 3 {
+            let default_cap_string = &default_cap[2];
+            let original_key = &default_cap[1];
+            let out_val = (original_key.into(), default_cap_string.into());
+            default_replace = Some(out_val);
+        }
+    }
+
+    default_replace
+}
+
 pub trait Context {
     fn get_value_from_key(&self, key: &str) -> Option<String>;
 }
@@ -79,10 +107,27 @@ pub fn replace_all_from(
     for cap in capture_parameter(text) {
         let replace_str = &cap[0];
         let key = &cap[1];
-        if let Some(replace_with) = context.get_value_from_key(key) {
-            replacements.push((replace_str.to_owned(),replace_with));
+
+        // we need to set key to the output of try_get_default
+        // because if the first capture group was formatted
+        // with a default, then the 'key' isnt actually the key
+        // we want.. it is: "key | default", so we need to parse out the actual "key"
+        let (key, default_val) = if let Some((ok, dv)) = try_get_default(key) {
+            (ok, Some(dv))
+        } else {
+            (key.into(), None)
+        };
+
+        if let Some(replace_with) = context.get_value_from_key(key.as_str()) {
+            replacements.push((replace_str.to_owned(), replace_with));
             continue;
         }
+
+        if let Some(default_value) = default_val {
+            replacements.push((replace_str.to_owned(), default_value));
+            continue;
+        }
+
         match failure_mode {
             FM_ignore => (),
             FM_panic => panic!("Failed to get contex value from key: {}", key),
