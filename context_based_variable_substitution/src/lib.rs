@@ -18,24 +18,42 @@ pub fn capture_parameter(text: &str) -> regex::CaptureMatches {
 // to detect default variable substitutions?
 pub fn capture_default(text: &str) -> regex::CaptureMatches {
     lazy_static! {
-        static ref RE: Regex = Regex::new(r"(..*?)\x20\|\x20(..*?)$").unwrap();
+        static ref RE: Regex = Regex::new(r"(..*?)\x20(\|+)\x20(..*?)$").unwrap();
     }
     RE.captures_iter(text)
 }
 
-pub fn try_get_default(key: &str) -> Option<(String, String)> {
-    let mut default_replace: Option<(String, String)> = None;
+pub enum DefaultType {
+    DefaultNone,
+    DefaultString(String, String),
+    DefaultKey(String, String),
+}
+use DefaultType::*;
+
+pub fn try_get_default(key: &str) -> DefaultType {
+    let mut default_replace = DefaultNone;
     for default_cap in capture_default(key) {
         // for capturing default, we assume the capture
         // group should only contain:
         // [0]: the_origina_key | default value
         // [1]: the_origina_key
-        // [2]: default value
-        if default_cap.len() == 3 {
-            let default_cap_string = &default_cap[2];
+        // [2]: |
+        // [3]: default value
+        // its important to capture [2] because it tells us
+        // if the default should be treated as a key, or as a string
+        if default_cap.len() == 4 {
             let original_key = &default_cap[1];
-            let out_val = (original_key.into(), default_cap_string.into());
-            default_replace = Some(out_val);
+            let default_seperator = &default_cap[2];
+            let default_cap_string = &default_cap[3];
+            // let out_val = (original_key.into(), default_cap_string.into());
+            if default_seperator.len() > 1 {
+                // this is a dynamic default.. ie: the
+                // default is a key that needs to be resolved
+                default_replace = DefaultKey(original_key.into(), default_cap_string.into());
+            } else {
+                // this is a static default
+                default_replace = DefaultString(original_key.into(), default_cap_string.into());
+            }
         }
     }
 
@@ -112,10 +130,11 @@ pub fn replace_all_from(
         // because if the first capture group was formatted
         // with a default, then the 'key' isnt actually the key
         // we want.. it is: "key | default", so we need to parse out the actual "key"
-        let (key, default_val) = if let Some((ok, dv)) = try_get_default(key) {
-            (ok, Some(dv))
-        } else {
-            (key.into(), None)
+        let default_type = try_get_default(key);
+        let key = match default_type {
+            DefaultNone => key.into(),
+            DefaultString(ref k, _) => k.clone(),
+            DefaultKey(ref k, _) => k.clone(),
         };
 
         if let Some(replace_with) = context.get_value_from_key(key.as_str()) {
@@ -123,9 +142,19 @@ pub fn replace_all_from(
             continue;
         }
 
-        if let Some(default_value) = default_val {
-            replacements.push((replace_str.to_owned(), default_value));
-            continue;
+        match default_type {
+            DefaultNone => (),
+            DefaultString(_, default_value) => {
+                replacements.push((replace_str.to_owned(), default_value));
+                continue;
+            },
+            DefaultKey(_, try_key) => {
+                // dynamic key usage:
+                if let Some(replace_with) = context.get_value_from_key(try_key.as_str()) {
+                    replacements.push((replace_str.to_owned(), replace_with));
+                    continue;
+                }
+            }
         }
 
         match failure_mode {
@@ -222,6 +251,28 @@ mod tests {
         // even though we give a global default, we provide a local default
         // so it should use the local default
         let replaced = replace_all_from(text, &context, FailureMode::FM_default("global_default".into()));
+        assert_eq!(expected.to_string(), replaced);
+    }
+
+    #[test]
+    fn can_use_default_dynamically() {
+        let context = MyContext {};
+        // this syntax should allow parsing the default as another key
+        // which would allow dynamic defaults
+        let text = "this is my ${{ nonexistant || custom_key }}";
+        let expected = "this is my custom_context";
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        assert_eq!(expected.to_string(), replaced);
+    }
+
+    #[test]
+    fn default_dynamic_doesnt_override_original_key() {
+        let context = vec!["abc", "xyz"];
+        // a dynamic default should not be used if the original
+        // key works
+        let text = "this is my ${{ 0 || 1 }}";
+        let expected = "this is my abc";
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
         assert_eq!(expected.to_string(), replaced);
     }
 }
