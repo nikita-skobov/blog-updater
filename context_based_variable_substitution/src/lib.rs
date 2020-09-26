@@ -130,7 +130,7 @@ pub fn replace_all_from(
 
         match failure_mode {
             FM_ignore => (),
-            FM_panic => panic!("Failed to get contex value from key: {}", key),
+            FM_panic => panic!("Failed to get context value from key: {}", key),
             FM_default(ref default) => replacements.push((replace_str.to_owned(), default.clone())),
         }
     }
@@ -140,4 +140,88 @@ pub fn replace_all_from(
     }
 
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct MyContext {}
+    impl Context for MyContext {
+        fn get_value_from_key(&self, key: &str) -> Option<String> {
+            if key == "custom_key" {
+                Some("custom_context".into())
+            } else {
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn returns_as_is_if_nothing_to_replace() {
+        let context: Vec<String> = vec![];
+        let text = r#"
+        dsadsa
+        dsadsadsa dsadsadsa  {{ something? }}
+         dsads dsadsadsa ${{notreplacedbecausenospaces}}
+        "#;
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        assert_eq!(text.to_string(), replaced);
+    }
+
+    #[test]
+    fn replaces_from_simple_vec_contexts() {
+        let my_path = "hello";
+        let context = vec![my_path];
+        let text = "this is my ${{ 0 }} world";
+        let expected = "this is my hello world";
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        assert_eq!(expected.to_string(), replaced);
+    }
+
+    #[test]
+    fn replaces_from_custom_contexts() {
+        let context = MyContext {};
+        let text = "this is my ${{ custom_key }}";
+        let expected = "this is my custom_context";
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        assert_eq!(expected.to_string(), replaced);
+    }
+
+    #[test]
+    #[should_panic(expected = "Failed to get context value from key: nonexistant")]
+    fn failure_mode_panic_if_failed_to_find_value_for_key() {
+        let context = MyContext {};
+        let text = "this is my ${{ nonexistant }}";
+        let expected = "this is my custom_context";
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+    }
+
+    #[test]
+    fn should_leave_failed_key_if_mode_is_ignore() {
+        let context = MyContext {};
+        let text = "this is my ${{ nonexistant }}";
+        let expected = "this is my ${{ nonexistant }}";
+        let replaced = replace_all_from(text, &context, FailureMode::FM_ignore);
+        assert_eq!(expected.to_string(), replaced);
+    }
+
+    #[test]
+    fn can_use_default_value_if_mode_is_default() {
+        let context = MyContext {};
+        let text = "this is my ${{ nonexistant }}";
+        let expected = "this is my global_default";
+        let replaced = replace_all_from(text, &context, FailureMode::FM_default("global_default".into()));
+        assert_eq!(expected.to_string(), replaced);
+    }
+
+    #[test]
+    fn can_use_default_syntax_from_text() {
+        let context = MyContext {};
+        let text = "this is my ${{ nonexistant | syntax_default }}";
+        let expected = "this is my syntax_default";
+        // even though we give a global default, we provide a local default
+        // so it should use the local default
+        let replaced = replace_all_from(text, &context, FailureMode::FM_default("global_default".into()));
+        assert_eq!(expected.to_string(), replaced);
+    }
 }
