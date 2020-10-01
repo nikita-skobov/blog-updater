@@ -88,7 +88,6 @@ impl<T: ToString> Context for Vec<T> {
     }
 }
 
-
 // an enum of options of what to do if the replace all
 // functions fail to replace a match, ie: if the context does
 // not contain the keyword we are replacing
@@ -185,6 +184,19 @@ mod tests {
         }
     }
 
+    // TODO: this works, but not for anything other than &[T]
+    pub trait Context3 {
+        fn something(&self);
+    }
+    impl<T> Context3 for [T] {
+        fn something(&self) {
+        }
+    }
+    pub fn takes_context3<T>(context: &[T]) {
+        context.something();
+    }
+
+
     #[test]
     fn returns_as_is_if_nothing_to_replace() {
         let context: Vec<String> = vec![];
@@ -275,4 +287,23 @@ mod tests {
         let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
         assert_eq!(expected.to_string(), replaced);
     }
+
+    // TODO:
+    // #[test]
+    // fn context_works_for_any_vec_slice_or_array() {
+    //     let context = ["abc", "xyz"];
+    //     let context_vec = vec!["abc", "xyz"];
+    //     let context_string: [String; 2] = ["abc".into(), "xyz".into()];
+    //     let context_vec_string: Vec<String> = vec!["abc".into(), "xyz".into()];
+    //     context.something();
+    //     context_vec.something();
+    //     context_string.something();
+    //     context_vec_string.something();
+
+    //     takes_context3(&context);
+    //     takes_context3(&context_vec);
+    //     takes_context3(&context_string);
+    //     takes_context3(&context_vec[..]);
+    //     takes_context3(&context_vec_string[..]);
+    // }
 }
