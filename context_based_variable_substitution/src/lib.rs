@@ -118,25 +118,39 @@ pub enum FailureMode {
 /// context is some data structure that implements the
 /// Context trait. basically pass in something that this function
 /// can ask how to get a value from a key.
-/// parse_by_line is whether or not we should iterate over the lines
-/// of the text, or just parse all in one go. the advantage to
-/// parsing
+/// failure mode determines what to do if it finds a match of
+/// the parameter substitution syntax, but couldn't find a key to substitute.
+/// lastly, valid_syntax_chars is an array of chars that should be allowed
+/// allowed to try to get keys from, this can be useful if your application
+/// only wants to look at ${{ }} syntax at one stage, and at another
+/// stage, only evaluate !{{ }}
 pub fn replace_all_from(
     text: &str,
     context: &impl Context,
     failure_mode: FailureMode,
+    valid_syntax_chars: Option<&str>,
 ) -> String {
     use FailureMode::*;
 
     let mut replacements = vec![];
     let mut s: String = text.clone().to_string();
+    // by default only examine '$'
+    let valid_chars = valid_syntax_chars.unwrap_or("$");
+    let valid_chars: Vec<char> = valid_chars.chars().collect();
     for cap in capture_parameter_of_type(text) {
         let replace_str = &cap[0];
         let syntax_char = &cap[1];
+        let key = &cap[2];
         // I don't think its possible for this to be None
         // because if we are here that means we DID find a match...
         let syntax_char = syntax_char.chars().nth(0).unwrap();
-        let key = &cap[2];
+
+        // if the current matches syntax char
+        // is not one of the valid ones provided, then
+        // skip this capture
+        if ! valid_chars.contains(&syntax_char) {
+            continue;
+        }
 
         // we need to set key to the output of try_get_default
         // because if the first capture group was formatted
@@ -205,7 +219,7 @@ mod tests {
         dsadsadsa dsadsadsa  {{ something? }}
          dsads dsadsadsa ${{notreplacedbecausenospaces}}
         "#;
-        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic, None);
         assert_eq!(text.to_string(), replaced);
     }
 
@@ -215,7 +229,7 @@ mod tests {
         let context = vec![my_path];
         let text = "this is my ${{ 0 }} world";
         let expected = "this is my hello world";
-        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic, None);
         assert_eq!(expected.to_string(), replaced);
     }
 
@@ -224,7 +238,7 @@ mod tests {
         let context = MyContext {};
         let text = "this is my ${{ custom_key }}";
         let expected = "this is my custom_context";
-        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic, None);
         assert_eq!(expected.to_string(), replaced);
     }
 
@@ -234,7 +248,7 @@ mod tests {
         let context = MyContext {};
         let text = "this is my ${{ nonexistant }}";
         let expected = "this is my custom_context";
-        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic, None);
     }
 
     #[test]
@@ -242,7 +256,7 @@ mod tests {
         let context = MyContext {};
         let text = "this is my ${{ nonexistant }}";
         let expected = "this is my ${{ nonexistant }}";
-        let replaced = replace_all_from(text, &context, FailureMode::FM_ignore);
+        let replaced = replace_all_from(text, &context, FailureMode::FM_ignore, None);
         assert_eq!(expected.to_string(), replaced);
     }
 
@@ -251,7 +265,7 @@ mod tests {
         let context = MyContext {};
         let text = "this is my ${{ nonexistant }}";
         let expected = "this is my global_default";
-        let replaced = replace_all_from(text, &context, FailureMode::FM_default("global_default".into()));
+        let replaced = replace_all_from(text, &context, FailureMode::FM_default("global_default".into()), None);
         assert_eq!(expected.to_string(), replaced);
     }
 
@@ -262,7 +276,7 @@ mod tests {
         let expected = "this is my syntax_default";
         // even though we give a global default, we provide a local default
         // so it should use the local default
-        let replaced = replace_all_from(text, &context, FailureMode::FM_default("global_default".into()));
+        let replaced = replace_all_from(text, &context, FailureMode::FM_default("global_default".into()), None);
         assert_eq!(expected.to_string(), replaced);
     }
 
@@ -273,7 +287,7 @@ mod tests {
         // which would allow dynamic defaults
         let text = "this is my ${{ nonexistant || custom_key }}";
         let expected = "this is my custom_context";
-        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic, None);
         assert_eq!(expected.to_string(), replaced);
     }
 
@@ -284,7 +298,22 @@ mod tests {
         // key works
         let text = "this is my ${{ 0 || 1 }}";
         let expected = "this is my abc";
-        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic, None);
+        assert_eq!(expected.to_string(), replaced);
+    }
+
+    #[test]
+    fn uses_dollar_sign_as_default_syntax_char() {
+        let context = vec!["abc", "xyz"];
+        let text = "this is my ${{ 0 }}";
+        let expected = "this is my abc";
+        // because we pass None for syntax chars, it should default to only use
+        // dollar sign
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic, None);
+        assert_eq!(expected.to_string(), replaced);
+        let text = "this is my Q{{ 0 }}";
+        let expected = "this is my Q{{ 0 }}";
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic, None);
         assert_eq!(expected.to_string(), replaced);
     }
 
@@ -303,20 +332,21 @@ mod tests {
             }
         }
 
+        let valid_chars = Some("@!a");
         let context = MyContext2 {};
         let text = "this is my @{{ custom_key }}";
         let expected = "this is my char_was_@";
-        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic, valid_chars);
         assert_eq!(expected.to_string(), replaced);
         let context = MyContext2 {};
         let text = "this is my !{{ custom_key }}";
         let expected = "this is my char_was_!";
-        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic, valid_chars);
         assert_eq!(expected.to_string(), replaced);
         let context = MyContext2 {};
         let text = "this is my a{{ custom_key }}";
         let expected = "this is my a{{ custom_key }}";
-        let replaced = replace_all_from(text, &context, FailureMode::FM_ignore);
+        let replaced = replace_all_from(text, &context, FailureMode::FM_ignore, valid_chars);
         assert_eq!(expected.to_string(), replaced);
     }
 
@@ -326,7 +356,7 @@ mod tests {
         let text = "this is my {{ custom_key }}";
         let expected = "this is my {{ custom_key }}";
         // should be as is because there was no char in front of {{ to match with
-        let replaced = replace_all_from(text, &context, FailureMode::FM_ignore);
+        let replaced = replace_all_from(text, &context, FailureMode::FM_ignore, None);
         assert_eq!(expected.to_string(), replaced);
     }
 
