@@ -3,16 +3,18 @@ use regex::Regex;
 use lazy_static::lazy_static;
 
 // TODO:
-// do I want this to be dynamic?
-// do I want users of this library to customize the parameter syntax?
-// might be useful if this lib is to truly be generic...
-// for now it only supports this syntax: ${{ }}
-pub fn capture_parameter(text: &str) -> regex::CaptureMatches {
+// do I want this to be more dynamic?
+// right now it allows any sort of syntax character
+// like ${{ }} or !{{ }}, @{{ }}, etc..
+pub fn capture_parameter_of_type(text: &str) -> regex::CaptureMatches {
+    // first matching group: (\S) will capture any single non-whitespace character
     lazy_static! {
-        static ref RE: Regex = Regex::new(r"\$\{\{\x20(..*?)\x20\}\}").unwrap();
+        static ref RE: Regex = Regex::new(r"(\S)\{\{\x20(..*?)\x20\}\}").unwrap();
     }
     RE.captures_iter(text)
 }
+
+
 
 // same TODO as above.. should we allow custom/dynamic ways
 // to detect default variable substitutions?
@@ -60,8 +62,15 @@ pub fn try_get_default(key: &str) -> DefaultType {
     default_replace
 }
 
+/// a context can be defined on any data structure. The context trait allows the user
+/// to define what keys, and what syntax chars are relevant, and then how to
+/// get a value from a replacement key. Consider the example:
+/// ${{ my_env_variable }}
+/// when your context is called, you will get key = "my_env_variable", and
+/// syntax_char = '$', and from there you can figure out the appropriate way to
+/// return a string to replace
 pub trait Context {
-    fn get_value_from_key(&self, key: &str) -> Option<String>;
+    fn get_value_from_key(&self, key: &str, syntax_char: char) -> Option<String>;
 }
 
 // some specific implementations we should make so that
@@ -70,15 +79,15 @@ pub trait Context {
 // private impl of external traits:
 // https://github.com/rust-lang/rfcs/issues/493
 
-// for this one, we assume that the key is something
-// that can be parsed into a usize so that we can
-// index the Vec<T>. we also ~~assume~~ require that T can be
-// converted into a string value
-// TODO: figure out how to make this work for anything of [T], or &[..]
-// i think its something like this, but I havent gotten it to work yet:
-// impl<'a, T> Context for T where T: AsRef<[&'a str]>
+/// for this one, we assume that the key is something
+/// that can be parsed into a usize so that we can
+/// index the Vec<T>. we also ~~assume~~ require that T can be
+/// converted into a string value
+/// TODO: figure out how to make this work for anything of [T], or &[..]
+/// i think its something like this, but I havent gotten it to work yet:
+/// impl<'a, T> Context for T where T: AsRef<[&'a str]>
 impl<T: ToString> Context for Vec<T> {
-    fn get_value_from_key(&self, key: &str) -> Option<String> {
+    fn get_value_from_key(&self, key: &str, syntax_char: char) -> Option<String> {
         if let Ok(key_usize) = key.parse::<usize>() { match key_usize < self.len() {
             true => Some(self[key_usize].to_string()),
             false => None,
@@ -88,9 +97,9 @@ impl<T: ToString> Context for Vec<T> {
     }
 }
 
-// an enum of options of what to do if the replace all
-// functions fail to replace a match, ie: if the context does
-// not contain the keyword we are replacing
+/// an enum of options of what to do if the replace all
+/// functions fail to replace a match, ie: if the context does
+/// not contain the keyword we are replacing
 pub enum FailureMode {
     FM_ignore,
     FM_panic,
@@ -105,13 +114,13 @@ pub enum FailureMode {
     // FM_callback,
 }
 
-// text is the text you wish to replace
-// context is some data structure that implements the
-// Context trait. basically pass in something that this function
-// can ask how to get a value from a key.
-// parse_by_line is whether or not we should iterate over the lines
-// of the text, or just parse all in one go. the advantage to
-// parsing
+/// text is the text you wish to replace
+/// context is some data structure that implements the
+/// Context trait. basically pass in something that this function
+/// can ask how to get a value from a key.
+/// parse_by_line is whether or not we should iterate over the lines
+/// of the text, or just parse all in one go. the advantage to
+/// parsing
 pub fn replace_all_from(
     text: &str,
     context: &impl Context,
@@ -121,9 +130,13 @@ pub fn replace_all_from(
 
     let mut replacements = vec![];
     let mut s: String = text.clone().to_string();
-    for cap in capture_parameter(text) {
+    for cap in capture_parameter_of_type(text) {
         let replace_str = &cap[0];
-        let key = &cap[1];
+        let syntax_char = &cap[1];
+        // I don't think its possible for this to be None
+        // because if we are here that means we DID find a match...
+        let syntax_char = syntax_char.chars().nth(0).unwrap();
+        let key = &cap[2];
 
         // we need to set key to the output of try_get_default
         // because if the first capture group was formatted
@@ -136,7 +149,7 @@ pub fn replace_all_from(
             DefaultKey(ref k, _) => k.clone(),
         };
 
-        if let Some(replace_with) = context.get_value_from_key(key.as_str()) {
+        if let Some(replace_with) = context.get_value_from_key(key.as_str(), syntax_char) {
             replacements.push((replace_str.to_owned(), replace_with));
             continue;
         }
@@ -149,7 +162,7 @@ pub fn replace_all_from(
             },
             DefaultKey(_, try_key) => {
                 // dynamic key usage:
-                if let Some(replace_with) = context.get_value_from_key(try_key.as_str()) {
+                if let Some(replace_with) = context.get_value_from_key(try_key.as_str(), syntax_char) {
                     replacements.push((replace_str.to_owned(), replace_with));
                     continue;
                 }
@@ -175,7 +188,7 @@ mod tests {
     use super::*;
     struct MyContext {}
     impl Context for MyContext {
-        fn get_value_from_key(&self, key: &str) -> Option<String> {
+        fn get_value_from_key(&self, key: &str, syntax_char: char) -> Option<String> {
             if key == "custom_key" {
                 Some("custom_context".into())
             } else {
@@ -183,19 +196,6 @@ mod tests {
             }
         }
     }
-
-    // TODO: this works, but not for anything other than &[T]
-    pub trait Context3 {
-        fn something(&self);
-    }
-    impl<T> Context3 for [T] {
-        fn something(&self) {
-        }
-    }
-    pub fn takes_context3<T>(context: &[T]) {
-        context.something();
-    }
-
 
     #[test]
     fn returns_as_is_if_nothing_to_replace() {
@@ -285,6 +285,48 @@ mod tests {
         let text = "this is my ${{ 0 || 1 }}";
         let expected = "this is my abc";
         let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        assert_eq!(expected.to_string(), replaced);
+    }
+
+    #[test]
+    fn calls_context_with_syntax_character() {
+        struct MyContext2 {}
+        impl Context for MyContext2 {
+            fn get_value_from_key(&self, key: &str, syntax_char: char) -> Option<String> {
+                if syntax_char == '@' {
+                    Some("char_was_@".into())
+                } else if syntax_char == '!' {
+                    Some("char_was_!".into())
+                } else {
+                    None
+                }
+            }
+        }
+
+        let context = MyContext2 {};
+        let text = "this is my @{{ custom_key }}";
+        let expected = "this is my char_was_@";
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        assert_eq!(expected.to_string(), replaced);
+        let context = MyContext2 {};
+        let text = "this is my !{{ custom_key }}";
+        let expected = "this is my char_was_!";
+        let replaced = replace_all_from(text, &context, FailureMode::FM_panic);
+        assert_eq!(expected.to_string(), replaced);
+        let context = MyContext2 {};
+        let text = "this is my a{{ custom_key }}";
+        let expected = "this is my a{{ custom_key }}";
+        let replaced = replace_all_from(text, &context, FailureMode::FM_ignore);
+        assert_eq!(expected.to_string(), replaced);
+    }
+
+    #[test]
+    fn whitespace_doesnt_count_as_syntax_char() {
+        let context = MyContext {};
+        let text = "this is my {{ custom_key }}";
+        let expected = "this is my {{ custom_key }}";
+        // should be as is because there was no char in front of {{ to match with
+        let replaced = replace_all_from(text, &context, FailureMode::FM_ignore);
         assert_eq!(expected.to_string(), replaced);
     }
 
