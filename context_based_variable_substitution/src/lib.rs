@@ -114,16 +114,36 @@ pub enum FailureMode {
     // FM_callback,
 }
 
-/// text is the text you wish to replace
+/// Text is the text you wish to replace.
 /// context is some data structure that implements the
-/// Context trait. basically pass in something that this function
+/// Context trait. Basically pass in something that this function
 /// can ask how to get a value from a key.
-/// failure mode determines what to do if it finds a match of
+/// Failure mode determines what to do if it finds a match of
 /// the parameter substitution syntax, but couldn't find a key to substitute.
-/// lastly, valid_syntax_chars is an array of chars that should be allowed
+/// Lastly, valid_syntax_chars is an array of chars that should be allowed
 /// allowed to try to get keys from, this can be useful if your application
 /// only wants to look at ${{ }} syntax at one stage, and at another
 /// stage, only evaluate !{{ }}
+/// # Example 1:
+/// ```
+/// // where SomeContextImpl would need to
+/// // implement the Context trait
+/// let context = SomeContextImpl { my_var: "world" };
+/// s = replace_all_from("hello ${{ my_var }}", context, FailureMode::FM_panic, None)
+/// assert_eq!(s, "hello world")
+/// ```
+/// # Example 2:
+/// by default, any vec of str, or String has context implemented for it.
+/// This example also shows you can use defaults with a single pipe character
+/// or dynamic defaults with a double pipe. the dynamic defaults will interpret
+/// the thing after the double pipe as a key to try to get a value for
+/// ```
+/// let context = vec!["zero", "one", "two", "three"];
+/// s = replace_all_from(
+///    "${{ 0 }} default:${{ 4 | constant here }} dynamic_default:${{ 4 || 3 }}",
+///    context, FailureMode::FM_panic, None);
+/// assert_eq!(s, "zero  default:constant here dynamic_default:three")
+/// ```
 pub fn replace_all_from(
     text: &str,
     context: &impl Context,
@@ -141,7 +161,7 @@ pub fn replace_all_from(
         let replace_str = &cap[0];
         let syntax_char = &cap[1];
         let key = &cap[2];
-        // I don't think its possible for this to be None
+        // I don't think its possible for chars.nth(0) to be None
         // because if we are here that means we DID find a match...
         let syntax_char = syntax_char.chars().nth(0).unwrap();
 
@@ -163,11 +183,14 @@ pub fn replace_all_from(
             DefaultKey(ref k, _) => k.clone(),
         };
 
+        // ask the provided context if
+        // the current key has a value to be replaced
         if let Some(replace_with) = context.get_value_from_key(key.as_str(), syntax_char) {
             replacements.push((replace_str.to_owned(), replace_with));
             continue;
         }
 
+        // if not, then try the default
         match default_type {
             DefaultNone => (),
             DefaultString(_, default_value) => {
@@ -183,6 +206,7 @@ pub fn replace_all_from(
             }
         }
 
+        // if that failed, then use the provided failure mode
         match failure_mode {
             FM_ignore => (),
             FM_panic => panic!("Failed to get context value from key: {}", key),
@@ -190,10 +214,16 @@ pub fn replace_all_from(
         }
     }
 
+    // perform all the replacements at the end
+    // the above loop just populates a replacement vec
+    // and its easier to iterate over this at the end
     for (replace_str, replace_with) in replacements {
         s = s.replace(&replace_str[..], &replace_with[..]);
     }
 
+    // TODO:
+    // would be nice to change API to allow return option
+    // either it did replace, or it did not
     s
 }
 
