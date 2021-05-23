@@ -1,0 +1,10 @@
+[package]
+name = "blog-updater"
+version = "0.1.0"
+edition = "2018"
+
+
+[dependencies]
+gumdrop = "0.8"
+exechelper = { path = "../exechelper" }
+simple-interaction = { path = "../simple-interaction" }
