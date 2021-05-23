@@ -27,6 +27,14 @@ pub struct Cli {
     pub no_interactive: bool,
 }
 
+pub struct BlogFile {
+    pub path_from_root: String,
+    /// the first element should be the most recent update,
+    /// ie: use this as the blog post's updated time,
+    /// and the last element should be the created at time
+    pub update_timestamps: Vec<String>,
+}
+
 /// steps for updating blogs:
 /// 1. find the <blogs_branch> and check every commit
 ///    that has been made since that involes a file called <blog_file>
@@ -81,6 +89,75 @@ pub fn get_first_commit_of_branch(branch_name: &str) -> io::Result<String> {
             Ok(commit_id.to_owned())
         }
     })
+}
+
+
+// TODO: I thought this was a good command at first
+// but then decided not to use it because it would require too much parsing
+// going to leave it as a comment here in case I want to use it again sometime:
+// git log A..B --date=unix --name-only --pretty=format:%h%n%cd
+// the above log format will be:
+//      [hash]
+//      [timestamp]
+//      [files...]
+//      <newline>
+
+pub fn get_all_files_changed_since_last_blog_update(
+    blog_branch_name: &str, main_ref_branch_name: &str,
+) -> io::Result<Vec<String>> {
+    let exec_args = [
+        "git", "diff", main_ref_branch_name, blog_branch_name, "--name-only",
+    ];
+    let list = get_git_command(&exec_args, |cmdout| {
+        if cmdout.status != 0 {
+            let err_msg = format!("Failed to get files changed for revision between {} and {}", main_ref_branch_name, blog_branch_name);
+            Err(err_msg)
+        } else {
+            let list = cmdout.stdout.trim_end().split('\n')
+                .map(|n| n.to_string()).collect::<Vec<String>>();
+            Ok(list)
+        }
+    })?;
+    Ok(list)
+}
+
+pub fn get_all_timestamps_of_file_commits(
+    blog_file_path: &str, main_ref_branch_name: &str,
+) -> io::Result<Vec<String>> {
+    // TODO: this needs to be ran from the root of the repo
+    let exec_args = [
+        "git", "log", main_ref_branch_name, "--date=unix", "--pretty-format:%cd", "--", blog_file_path,
+    ];
+    let list = get_git_command(&exec_args, |cmdout| {
+        if cmdout.status != 0 {
+            let err_msg = format!("Failed to get timestamps of changes to {}", blog_file_path);
+            Err(err_msg)
+        } else {
+            let list = cmdout.stdout.trim_end().split('\n')
+                .map(|n| n.to_string()).collect::<Vec<String>>();
+            Ok(list)
+        }
+    })?;
+    Ok(list)
+}
+
+pub fn get_all_blog_files_changed_since_last_blog_update(
+    blog_branch_name: &str, main_ref_branch_name: &str,
+    blog_file_name: &str,
+) -> io::Result<Vec<BlogFile>> {
+    let files_changed = get_all_files_changed_since_last_blog_update(blog_branch_name, main_ref_branch_name)?;
+    let mut out_vec = vec![];
+    for file in &files_changed {
+        if file.ends_with(blog_file_name) {
+            let update_timestamps = get_all_timestamps_of_file_commits(file, main_ref_branch_name)?;
+            out_vec.push(BlogFile {
+                path_from_root: file.to_owned(),
+                update_timestamps,
+            });
+        }
+    }
+
+    Ok(out_vec)
 }
 
 pub fn make_git_branch(branch_name: &str, from_ref: &str) -> io::Result<()> {
@@ -235,7 +312,7 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
         cli.blogs_branch_name
     };
 
-
+    let updated_blogs = get_all_blog_files_changed_since_last_blog_update(&blogs_branch_name, &main_ref_branch, &cli.blog_file_name)?;
 
     Ok(())
 }
