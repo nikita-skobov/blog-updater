@@ -27,6 +27,7 @@ pub struct Cli {
     pub no_interactive: bool,
 }
 
+#[derive(Debug)]
 pub struct BlogFile {
     pub path_from_root: String,
     /// the first element should be the most recent update,
@@ -60,10 +61,10 @@ pub fn get_git_command<T>(
 
 pub fn get_all_git_branches() -> io::Result<Vec<String>> {
     let exec_args = [
-        "git", "for-each-ref", "--format='%(refname:short)'", "refs/heads/"
+        "git", "for-each-ref", "--format=%(refname:short)", "refs/heads/"
     ];
     get_git_command(&exec_args, |cmdout| {
-        let branches = cmdout.stdout.split('\n')
+        let branches = cmdout.stdout.trim_end().split('\n')
             .map(|n| n.to_string()).collect::<Vec<String>>();
         if branches.is_empty() {
             return Err("Failed to find any git branches. Are you sure you're in a git repository?".into())
@@ -125,7 +126,7 @@ pub fn get_all_timestamps_of_file_commits(
     blog_file_path: &str, main_ref_branch_name: &str,
 ) -> io::Result<Vec<String>> {
     let exec_args = [
-        "git", "log", main_ref_branch_name, "--date=unix", "--pretty-format:%cd", "--", blog_file_path,
+        "git", "log", main_ref_branch_name, "--date=unix", "--pretty=format:%cd", "--", blog_file_path,
     ];
     let list = get_git_command(&exec_args, |cmdout| {
         if cmdout.status != 0 {
@@ -243,7 +244,7 @@ pub fn get_main_reference_branch(cli: &Cli, branch_list: &Vec<String>) -> io::Re
     let has_all = search_for_main_branch.iter().all(|b| branch_list.contains(&b));
     let has_any = search_for_main_branch.iter().any(|b| branch_list.contains(&b));
     let potential_err = if search_for_main_branch.len() == 2 && has_all {
-        "Looks like you have both master and main branches\nThis program does not know which one you wish to use as the main reference branch".into()
+        "Looks like you have both master and main branches\nThis program does not know which one to use".into()
     } else if search_for_main_branch.len() == 2 && !has_any {
         "Failed to find either master or main branch".into()
     } else {
@@ -266,6 +267,7 @@ pub fn get_main_reference_branch(cli: &Cli, branch_list: &Vec<String>) -> io::Re
     // otherwise lets try to interactively help the user out
     let use_branch = if has_all && search_for_main_branch.len() == 2 {
         // first case is if theres both main/master, so lets select the desired one
+        let potential_err = format!("{}\nWhich one would you like to use as the main reference branch?", potential_err);
         handle_multiple_main_branches(potential_err)?
     } else if search_for_main_branch.len() == 2 {
         // otherwise, if we are looking for either master/main
@@ -299,7 +301,7 @@ pub fn get_git_toplevel_absolute_path() -> io::Result<PathBuf> {
         if cmdout.status != 0 {
             Err("Failed to find git repo root".into())
         } else {
-            Ok(PathBuf::from(cmdout.stdout.clone()))
+            Ok(PathBuf::from(cmdout.stdout.trim_end().clone()))
         }
     })
 }
@@ -328,6 +330,7 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
 
     let updated_blogs = get_all_blog_files_changed_since_last_blog_update(&blogs_branch_name, &main_ref_branch, &cli.blog_file_name)?;
 
+    println!("Here are the blogs that have been updated since: {:?}", updated_blogs);
     Ok(())
 }
 
