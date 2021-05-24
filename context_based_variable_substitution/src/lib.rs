@@ -100,18 +100,30 @@ impl<T: ToString> Context for Vec<T> {
 /// an enum of options of what to do if the replace all
 /// functions fail to replace a match, ie: if the context does
 /// not contain the keyword we are replacing
+pub enum FailureModeEx<F: FnMut(&String) -> String> {
+    FM_ignore,
+    FM_panic,
+    FM_default(String),
+    FM_callback(F),
+}
+
+/// an enum of options of what to do if the replace all
+/// functions fail to replace a match, ie: if the context does
+/// not contain the keyword we are replacing
 pub enum FailureMode {
     FM_ignore,
     FM_panic,
     FM_default(String),
+}
 
-    // TODO:
-    // add a callback variant that has an associated value
-    // which is a callback function that can call back to the user
-    // and ask: "hey, this key failed. what do you want to do?"
-    // im leaving this TODO for now because I don't know if this is possible
-    // callbacks are hard :/
-    // FM_callback,
+impl<F: FnMut(&String) -> String> From<FailureMode> for FailureModeEx<F> {
+    fn from(orig: FailureMode) -> Self {
+        match orig {
+            FailureMode::FM_ignore => FailureModeEx::FM_ignore,
+            FailureMode::FM_panic => FailureModeEx::FM_panic,
+            FailureMode::FM_default(s) => FailureModeEx::FM_default(s),
+        }
+    }
 }
 
 /// Text is the text you wish to replace.
@@ -150,8 +162,29 @@ pub fn replace_all_from(
     failure_mode: FailureMode,
     valid_syntax_chars: Option<&str>,
 ) -> String {
-    use FailureMode::*;
+    let mut failure_mode_ex = failure_mode.into();
+    // TODO: how to properly specify: I dont care about the
+    // type of the callback for failure mode ex?
+    // in this case, we are tricking the compiler which is quite odd
+    // and ugly. ideally I can specify something like:
+    // failure_mode_ex: FailureModeEx<_>
+    // but idk how to do that correctly
+    if false {
+        failure_mode_ex = FailureModeEx::FM_callback(|s| s.clone());
+    }
+    replace_all_from_ex(text, context, failure_mode_ex, valid_syntax_chars)
+}
 
+/// Like replace_all_from, but you can use an additional failure mode which is
+/// `FailureModeEx` which allows specifying a failure mode of a callback
+/// to replace a key if not found.
+pub fn replace_all_from_ex<F: FnMut(&String) -> String>(
+    text: &str,
+    context: &impl Context,
+    failure_mode: FailureModeEx<F>,
+    valid_syntax_chars: Option<&str>,
+) -> String {
+    let mut failure_mode = failure_mode;
     let mut replacements = vec![];
     let mut s: String = text.clone().to_string();
     // by default only examine '$'
@@ -208,9 +241,13 @@ pub fn replace_all_from(
 
         // if that failed, then use the provided failure mode
         match failure_mode {
-            FM_ignore => (),
-            FM_panic => panic!("Failed to get context value from key: {}", key),
-            FM_default(ref default) => replacements.push((replace_str.to_owned(), default.clone())),
+            FailureModeEx::FM_ignore => (),
+            FailureModeEx::FM_panic => panic!("Failed to get context value from key: {}", key),
+            FailureModeEx::FM_default(ref default) => replacements.push((replace_str.to_owned(), default.clone())),
+            FailureModeEx::FM_callback(ref mut cb) => {
+                let replace_with = cb(&key);
+                replacements.push((replace_str.to_owned(), replace_with));
+            }
         }
     }
 
@@ -239,6 +276,24 @@ mod tests {
                 None
             }
         }
+    }
+
+    #[test]
+    fn replace_from_callback_works() {
+        let mut failed_to_replace_something = false;
+        let failuremode = FailureModeEx::FM_callback(|key| {
+            if key == "abc" {
+                "xyz".into()
+            } else {
+                failed_to_replace_something = true;
+                "".into()
+            }
+        });
+        let text = "${{ abc }} ${{ hello }}";
+        let context: Vec<String> = vec![];
+        let replaced = replace_all_from_ex(text, &context, failuremode, None);
+        assert!(failed_to_replace_something);
+        assert!(replaced.contains("xyz"));
     }
 
     #[test]
