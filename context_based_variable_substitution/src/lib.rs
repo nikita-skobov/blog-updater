@@ -1,4 +1,4 @@
-use std::string::ToString;
+use std::{collections::HashMap, string::ToString, hash::Hash};
 use regex::Regex;
 use lazy_static::lazy_static;
 
@@ -87,12 +87,21 @@ pub trait Context {
 /// i think its something like this, but I havent gotten it to work yet:
 /// impl<'a, T> Context for T where T: AsRef<[&'a str]>
 impl<T: ToString> Context for Vec<T> {
-    fn get_value_from_key(&self, key: &str, syntax_char: char) -> Option<String> {
+    fn get_value_from_key(&self, key: &str, _syntax_char: char) -> Option<String> {
         if let Ok(key_usize) = key.parse::<usize>() { match key_usize < self.len() {
             true => Some(self[key_usize].to_string()),
             false => None,
         } } else {
             None
+        }
+    }
+}
+
+impl<V: AsRef<str>> Context for HashMap<&str, V> {
+    fn get_value_from_key(&self, key: &str, _syntax_char: char) -> Option<String> {
+        match self.get(key) {
+            Some(val) => Some(val.as_ref().to_string()),
+            None => None,
         }
     }
 }
@@ -294,6 +303,16 @@ mod tests {
         let replaced = replace_all_from_ex(text, &context, failuremode, None);
         assert!(failed_to_replace_something);
         assert!(replaced.contains("xyz"));
+    }
+
+    #[test]
+    fn replace_from_hashmap_works() {
+        let mut context = HashMap::new();
+        context.insert("a", "b");
+        let text = "${{ a }}";
+        let replaced = replace_all_from(text, &context, FailureMode::FM_ignore, None);
+        assert!(replaced.contains("b"));
+        assert!(!replaced.contains("a"));
     }
 
     #[test]
