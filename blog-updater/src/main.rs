@@ -354,3 +354,47 @@ fn main() {
         std::process::exit(1);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pulldown_cmark::{Parser, html};
+    use context_based_variable_substitution::{ Context, replace_all_from, FailureMode };
+    use std::collections::HashMap;
+
+    #[derive(Debug, Default)]
+    struct MyContext {
+        pub keys: HashMap<String, String>,
+    }
+    impl Context for MyContext {
+        fn get_value_from_key(&self, key: &str, _syntax_char: char) -> Option<String> {
+            match self.keys.get(key) {
+                Some(s) => Some(s.clone()),
+                None => None,
+            }
+        }
+    }
+
+    fn markdowntest1_actual() -> io::Result<()> {
+        let data = std::fs::read_to_string("test/markdown.md")?;
+        let template = std::fs::read_to_string("test/template.html")?;
+        let parser = Parser::new(&data);
+        let mut html_out = String::from("");
+        html::push_html(&mut html_out, parser);
+        let mut replace_context = MyContext::default();
+        replace_context.keys.insert("markdownRendered".into(), html_out);
+
+        let replaced = replace_all_from(&template, &replace_context, FailureMode::FM_panic, None);
+        println!("{}\n", replaced);
+        // the markdown file contains the helloworld string, after variable
+        // substitution we want to ensure that the string is included
+        // in the final output
+        assert!(replaced.contains("<h1>helloworld</h1>"));
+        Ok(())
+    }
+
+    #[test]
+    fn markdowntest1() {
+        markdowntest1_actual().unwrap();
+    }
+}

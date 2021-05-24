@@ -8,3 +8,5 @@ edition = "2018"
 gumdrop = "0.8"
 exechelper = { path = "../exechelper" }
 simple-interaction = { path = "../simple-interaction" }
+pulldown-cmark = "0.8"
+context_based_variable_substitution = { path = "../context_based_variable_substitution" }
