@@ -109,7 +109,7 @@ impl<V: AsRef<str>> Context for HashMap<&str, V> {
 /// an enum of options of what to do if the replace all
 /// functions fail to replace a match, ie: if the context does
 /// not contain the keyword we are replacing
-pub enum FailureModeEx<F: FnMut(&String) -> String> {
+pub enum FailureModeEx<F: FnMut(&String) -> Option<String>> {
     FM_ignore,
     FM_panic,
     FM_default(String),
@@ -125,7 +125,7 @@ pub enum FailureMode {
     FM_default(String),
 }
 
-impl<F: FnMut(&String) -> String> From<FailureMode> for FailureModeEx<F> {
+impl<F: FnMut(&String) -> Option<String>> From<FailureMode> for FailureModeEx<F> {
     fn from(orig: FailureMode) -> Self {
         match orig {
             FailureMode::FM_ignore => FailureModeEx::FM_ignore,
@@ -179,7 +179,7 @@ pub fn replace_all_from(
     // failure_mode_ex: FailureModeEx<_>
     // but idk how to do that correctly
     if false {
-        failure_mode_ex = FailureModeEx::FM_callback(|s| s.clone());
+        failure_mode_ex = FailureModeEx::FM_callback(|_| None);
     }
     replace_all_from_ex(text, context, failure_mode_ex, valid_syntax_chars)
 }
@@ -187,7 +187,7 @@ pub fn replace_all_from(
 /// Like replace_all_from, but you can use an additional failure mode which is
 /// `FailureModeEx` which allows specifying a failure mode of a callback
 /// to replace a key if not found.
-pub fn replace_all_from_ex<F: FnMut(&String) -> String>(
+pub fn replace_all_from_ex<F: FnMut(&String) -> Option<String>>(
     text: &str,
     context: &impl Context,
     failure_mode: FailureModeEx<F>,
@@ -254,8 +254,9 @@ pub fn replace_all_from_ex<F: FnMut(&String) -> String>(
             FailureModeEx::FM_panic => panic!("Failed to get context value from key: {}", key),
             FailureModeEx::FM_default(ref default) => replacements.push((replace_str.to_owned(), default.clone())),
             FailureModeEx::FM_callback(ref mut cb) => {
-                let replace_with = cb(&key);
-                replacements.push((replace_str.to_owned(), replace_with));
+                if let Some(replace_with) = cb(&key) {
+                    replacements.push((replace_str.to_owned(), replace_with));
+                }
             }
         }
     }
@@ -292,10 +293,10 @@ mod tests {
         let mut failed_to_replace_something = false;
         let failuremode = FailureModeEx::FM_callback(|key| {
             if key == "abc" {
-                "xyz".into()
+                Some("xyz".into())
             } else {
                 failed_to_replace_something = true;
-                "".into()
+                Some("".into())
             }
         });
         let text = "${{ abc }} ${{ hello }}";
