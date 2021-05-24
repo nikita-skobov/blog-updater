@@ -34,6 +34,7 @@ pub struct BlogFile {
     /// ie: use this as the blog post's updated time,
     /// and the last element should be the created at time
     pub update_timestamps: Vec<String>,
+    pub git_author_name: String,
 }
 
 /// steps for updating blogs:
@@ -126,7 +127,7 @@ pub fn get_all_timestamps_of_file_commits(
     blog_file_path: &str, main_ref_branch_name: &str,
 ) -> io::Result<Vec<String>> {
     let exec_args = [
-        "git", "log", main_ref_branch_name, "--date=unix", "--pretty=format:%cd", "--", blog_file_path,
+        "git", "log", main_ref_branch_name, "--date=unix", "--pretty=format:%cd,%an", "--", blog_file_path,
     ];
     let list = get_git_command(&exec_args, |cmdout| {
         if cmdout.status != 0 {
@@ -149,11 +150,23 @@ pub fn get_all_blog_files_changed_since_last_blog_update(
     let mut out_vec = vec![];
     for file in &files_changed {
         if file.ends_with(blog_file_name) {
-            let update_timestamps = get_all_timestamps_of_file_commits(file, main_ref_branch_name)?;
-            out_vec.push(BlogFile {
+            let updates = get_all_timestamps_of_file_commits(file, main_ref_branch_name)?;
+            let mut blog_file = BlogFile {
                 path_from_root: file.to_owned(),
-                update_timestamps,
-            });
+                update_timestamps: vec![],
+                git_author_name: "".into(),
+            };
+            for update in &updates {
+                let comma_index = update.find(",")
+                    .map_or(Err(new_err("Failed to parse output of git log")), |i| Ok(i))?;
+                let timestamp = &update[0..comma_index];
+                let name = &update[(comma_index + 1)..];
+                blog_file.update_timestamps.push(timestamp.to_owned());
+                if blog_file.git_author_name.is_empty() {
+                    blog_file.git_author_name = name.trim_start().trim_end().to_string();
+                }
+            }
+            out_vec.push(blog_file);
         }
     }
 
