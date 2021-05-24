@@ -124,7 +124,6 @@ pub fn get_all_files_changed_since_last_blog_update(
 pub fn get_all_timestamps_of_file_commits(
     blog_file_path: &str, main_ref_branch_name: &str,
 ) -> io::Result<Vec<String>> {
-    // TODO: this needs to be ran from the root of the repo
     let exec_args = [
         "git", "log", main_ref_branch_name, "--date=unix", "--pretty-format:%cd", "--", blog_file_path,
     ];
@@ -292,7 +291,22 @@ pub fn get_main_reference_branch(cli: &Cli, branch_list: &Vec<String>) -> io::Re
     Ok(use_branch.to_owned())
 }
 
+pub fn get_git_toplevel_absolute_path() -> io::Result<PathBuf> {
+    let exec_args = [
+        "git", "rev-parse", "--show-toplevel"
+    ];
+    get_git_command(&exec_args, |cmdout| {
+        if cmdout.status != 0 {
+            Err("Failed to find git repo root".into())
+        } else {
+            Ok(PathBuf::from(cmdout.stdout.clone()))
+        }
+    })
+}
+
 pub fn run_cli(cli: Cli) -> io::Result<()> {
+    let git_root = get_git_toplevel_absolute_path()?;
+    std::env::set_current_dir(git_root)?;
     let branch_list = get_all_git_branches()?;
     let main_ref_branch = get_main_reference_branch(&cli, &branch_list)?;
 
@@ -317,10 +331,23 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
     Ok(())
 }
 
-fn main() {
+pub fn real_main() -> io::Result<()> {
+    let current_dir = std::env::current_dir()?;
     let opts = <Cli as Options>::parse_args_default_or_exit();
     if let Err(e) = run_cli(opts) {
         eprintln!("{}", e);
+        // no matter what, go back to the directory we were at the start
+        let _ = std::env::set_current_dir(current_dir);
+        std::process::exit(1);
+    }
+    std::env::set_current_dir(current_dir)?;
+
+    Ok(())
+}
+
+fn main() {
+    if let Err(e) = real_main() {
+        eprintln!("Some catostrophic error occurred: {}", e);
         std::process::exit(1);
     }
 }
