@@ -4,6 +4,9 @@ version = "1.0.0"
 authors = ["nikita-skobov"]
 edition = "2018"
 
+[lib]
+doctest = false
+
 [dependencies]
 regex = "1"
 lazy_static = "1.4.0"
