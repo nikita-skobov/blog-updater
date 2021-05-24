@@ -10,3 +10,6 @@ exechelper = { path = "../exechelper" }
 simple-interaction = { path = "../simple-interaction" }
 pulldown-cmark = "0.8"
 context_based_variable_substitution = { path = "../context_based_variable_substitution" }
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+chrono = "*"

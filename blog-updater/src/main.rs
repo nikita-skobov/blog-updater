@@ -1,10 +1,13 @@
 use gumdrop::Options;
 use std::path::PathBuf;
 use std::io::prelude::*;
-use std::io;
+use std::{collections::HashMap, io};
 use exechelper::CommandOutput;
-
+use serde::Deserialize;
+use pulldown_cmark::{Parser, html};
+use context_based_variable_substitution::{ replace_all_from_ex, FailureModeEx };
 use simple_interaction as interact;
+use chrono;
 
 #[derive(Debug, Options)]
 pub struct Cli {
@@ -14,6 +17,12 @@ pub struct Cli {
     pub blog_file_name: String,
     /// by default we will look for either a 'master' or a 'main' branch. otherwise, if you want to use some other specific branch as the main branch then you can specify this with --main-branch-name <name>.
     pub main_branch_name: Option<String>,
+
+    /// specify the path to your blog config that should contain things like your blog's name, URL, author's name, etc... if a blog config is not provided, this information can also be provided in the header of the blog file itself
+    pub blog_config_path: Option<PathBuf>,
+
+    /// specify the html template to use to transpile the rendered markdown into. if not specified, the default template will be used.
+    pub template_path: Option<PathBuf>,
 
     pub blog_renderer_executable: String,
     pub homepage_renderer_executable: String,
@@ -27,13 +36,121 @@ pub struct Cli {
     pub no_interactive: bool,
 }
 
+/// not all of these properties should be in your blog_config
+/// for example, it doesnt make sense for title to be there.
+/// however, for convenience Im using the same struct to represent the
+/// blog config as well as the data we get from the blog file itself,
+/// because there is potentially some overlap there.
+#[derive(Deserialize, Debug, Default, Clone)]
+pub struct BlogConfig {
+    // these probably should only come from the blog file:
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub tags: Vec<String>,
+    pub date_written: Option<String>,
+    pub date_updated: Option<String>,
+    pub blog_file_name: Option<String>,
+
+
+    // these probably only should come from the blog config:
+    pub author_name: Option<String>,
+    pub author_url: Option<String>,
+    pub author_email: Option<String>,
+    pub author_projects_url: Option<String>,
+    pub blog_name: Option<String>,
+    pub blog_home_url: Option<String>,
+}
+
+impl BlogConfig {
+    pub fn apply(&mut self, other: BlogConfig) {
+        if let Some(s) = other.title {
+            self.title = Some(s);
+        }
+        if let Some(s) = other.description {
+            self.description = Some(s);
+        }
+        if !other.tags.is_empty() {
+            self.tags = other.tags;
+        }
+        if let Some(s) = other.date_written {
+            self.date_written = Some(s);
+        }
+        if let Some(s) = other.date_updated {
+            self.date_updated = Some(s);
+        }
+        if let Some(s) = other.author_name {
+            self.author_name = Some(s);
+        }
+        if let Some(s) = other.author_url {
+            self.author_url = Some(s);
+        }
+        if let Some(s) = other.author_email {
+            self.author_email = Some(s);
+        }
+        if let Some(s) = other.author_projects_url {
+            self.author_projects_url = Some(s);
+        }
+        if let Some(s) = other.blog_name {
+            self.blog_name = Some(s);
+        }
+        if let Some(s) = other.blog_home_url {
+            self.blog_home_url = Some(s);
+        }
+        if let Some(s) = other.blog_file_name {
+            self.blog_file_name = Some(s);
+        }
+    }
+
+    pub fn to_hashmap_context<'a>(&'a self) -> HashMap<&'a str, &'a String> {
+        let mut context = HashMap::new();
+        if let Some(s) = &self.title {
+            context.insert("title", s);
+        }
+        if let Some(s) = &self.description {
+            context.insert("description", s);
+        }
+        // TODO: how to handle tags here?
+        // if !self.tags.is_empty() {
+        //     self.tags = self.tags;
+        // }
+        if let Some(s) = &self.date_written {
+            context.insert("date_written", s);
+        }
+        if let Some(s) = &self.date_updated {
+            context.insert("date_updated", s);
+        }
+        if let Some(s) = &self.author_name {
+            context.insert("author_name", s);
+        }
+        if let Some(s) = &self.author_url {
+            context.insert("author_url", s);
+        }
+        if let Some(s) = &self.author_email {
+            context.insert("author_email", s);
+        }
+        if let Some(s) = &self.author_projects_url {
+            context.insert("author_projects_url", s);
+        }
+        if let Some(s) = &self.blog_name {
+            context.insert("blog_name", s);
+        }
+        if let Some(s) = &self.blog_home_url {
+            context.insert("blog_home_url", s);
+        }
+        if let Some(s) = &self.blog_file_name {
+            context.insert("blog_file_name", s);
+        }
+        context
+    }
+}
+
 #[derive(Debug)]
 pub struct BlogFile {
     pub path_from_root: String,
     /// the first element should be the most recent update,
     /// ie: use this as the blog post's updated time,
     /// and the last element should be the created at time
-    pub update_timestamps: Vec<String>,
+    pub update_timestamps: Vec<i64>,
     pub git_author_name: String,
 }
 
@@ -161,7 +278,9 @@ pub fn get_all_blog_files_changed_since_last_blog_update(
                     .map_or(Err(new_err("Failed to parse output of git log")), |i| Ok(i))?;
                 let timestamp = &update[0..comma_index];
                 let name = &update[(comma_index + 1)..];
-                blog_file.update_timestamps.push(timestamp.to_owned());
+                let timestamp_parsed = timestamp.parse::<i64>()
+                    .map_err(|_| new_err("Failed to parse timestamp from git log"))?;
+                blog_file.update_timestamps.push(timestamp_parsed);
                 if blog_file.git_author_name.is_empty() {
                     blog_file.git_author_name = name.trim_start().trim_end().to_string();
                 }
@@ -208,7 +327,6 @@ pub fn handle_branch_missing(
     // 1. create it for me
     // 2. use a different blog branch name
     // 3. exit
-    // TODO: handle 1 and 2
     let use_branch = match selected {
         1 => {
             let first_commit_of_ref_branch = get_first_commit_of_branch(main_ref_branch_name)?;
@@ -319,6 +437,268 @@ pub fn get_git_toplevel_absolute_path() -> io::Result<PathBuf> {
     })
 }
 
+pub fn get_blog_file_from_branch(blog_file_path: &str, branch_name: &str) -> io::Result<String> {
+    let refpath = format!("{}:{}", branch_name, blog_file_path);
+    let exec_args = [
+        "git", "show", &refpath
+    ];
+    get_git_command(&exec_args, |cmdout| {
+        if cmdout.status != 0 {
+            Err(format!("Failed to get blog file {}", refpath))
+        } else {
+            Ok(cmdout.stdout.clone())
+        }
+    })
+}
+
+pub fn get_template(template: &Option<PathBuf>) -> io::Result<String> {
+    let default_template = include_str!("../templates/default.html");
+    match template {
+        Some(path) => std::fs::read_to_string(path),
+        None => Ok(default_template.to_string())
+    }
+}
+
+pub fn get_blog_config(path: &Option<PathBuf>) -> io::Result<BlogConfig> {
+    match path {
+        Some(p) => {
+            let file = std::fs::read_to_string(p)?;
+            let obj: BlogConfig = serde_json::from_str(&file)?;
+            Ok(obj)
+        }
+        None => Ok(BlogConfig::default())
+    }
+}
+
+pub fn parse_blog_header_line(line: &str, blog_config: &mut BlogConfig) {
+    let first_colon_index = if let Some(ind) = line.find(':') {
+        ind
+    } else { return; };
+
+    let key = &line[0..first_colon_index];
+    let key = key.trim_start().trim_end();
+    let value = &line[(first_colon_index + 1)..];
+    let value = value.trim_start().trim_end();
+
+    match key {
+        "title" => {
+            blog_config.title = Some(value.to_owned());
+        }
+        "tags" => {
+            let mut tags = vec![];
+            for tag in value.split(',') {
+                tags.push(tag.to_string());
+            }
+            blog_config.tags = tags;
+        }
+        "author" => {
+            blog_config.author_name = Some(value.to_owned());
+        }
+        "author_email" => {
+            blog_config.author_email = Some(value.to_owned());
+        }
+        "author_projects_url" => {
+            blog_config.author_projects_url = Some(value.to_owned());
+        }
+        "blog_home_url" => {
+            blog_config.blog_home_url = Some(value.to_owned());
+        }
+        "blog_name" => {
+            blog_config.blog_name = Some(value.to_owned());
+        }
+        "date" => {
+            blog_config.date_written = Some(value.to_owned());
+        }
+        "last_updated" => {
+            blog_config.date_updated = Some(value.to_owned());
+        }
+        "blog_file_name" => {
+            blog_config.blog_file_name = Some(value.to_owned());
+        }
+        _ => {},
+    }
+}
+
+/// blog_file is the raw text of the markdown file that was committed
+/// on the blog branch. we now want to extract some information from it
+/// and modify it slightly so that we only pass the relevant markdown
+/// to our markdown renderer.
+/// things we want to extract from blog_file: (in [] means its optional)
+/// note that some of these can come from the blog config file. the
+/// actual file takes precedence over whats in the blog config.
+/// - title
+/// - sanitized file name (for the URL)
+/// - description of this blog post
+/// - author name
+/// - [author URL]
+/// - [author email]
+/// - [author projects URL]
+/// - [list of tags]
+/// - blog home URL
+/// - name of blog home
+/// - date string written
+/// - [date string updated]
+pub fn parse_blog_file_info(blog_file: &str) -> io::Result<(BlogConfig, &str)> {
+    let mut config = BlogConfig::default();
+    // first line of blog file has to be the
+    // header info, otherwise, we assume there is no header
+    // and return a default blog config
+    if !blog_file.starts_with("---") {
+        return Ok((config, blog_file));
+    }
+
+    let mut split_index = 0;
+    let mut first_line = true;
+    for line in blog_file.lines() {
+        // plus 1 for the newline
+        split_index += line.len() + 1;
+        if first_line {
+            first_line = false;
+            continue;
+        }
+
+        if line.starts_with("---") {
+            break;
+        }
+
+        parse_blog_header_line(line, &mut config);
+    }
+
+    Ok((config, &blog_file[split_index..]))
+}
+
+/// the blog_text should not include the blog header.
+/// it is assumed you already stripped that out before calling this
+pub fn get_description(blog_text: &str) -> Option<String> {
+    let mut split = blog_text.trim_start().split("\n\n");
+    match split.next() {
+        Some(s) => Some(s.to_string()),
+        None => None,
+    }
+}
+
+/// used to create a valid url from a title.
+/// I think you can have some other characters in the url path
+/// but for now, this is the more sensible approach
+pub fn replace_with_valid_word(word: &str) -> String {
+    let valid_chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut out_word: String = "".into();
+    for c in word.chars() {
+        if valid_chars.contains(c) {
+            out_word.push(c);
+        }
+    }
+
+    out_word
+}
+
+pub fn get_blog_file_name(title: &Option<String>) -> Option<String> {
+    if let Some(title) = title {
+        let mut out_str: String = "".into();
+        for word in title.split_whitespace() {
+            let valid_word = replace_with_valid_word(&word.to_lowercase());
+            if valid_word.is_empty() {
+                continue;
+            }
+            if !out_str.is_empty() {
+                out_str.push('-');
+            }
+            out_str.push_str(&valid_word);
+        }
+        Some(out_str)
+    } else {
+        None
+    }
+}
+
+pub fn get_date_string_from_timestamp(timestamp: i64) -> String {
+    let naive = chrono::NaiveDateTime::from_timestamp(timestamp, 0);
+    let datetime: chrono::DateTime<chrono::Utc> = chrono::DateTime::from_utc(naive, chrono::Utc);
+    datetime.format("%Y-%m-%d").to_string()
+}
+
+pub fn render_blog_actual(
+    blog_file: &str,
+    updated_blog: &BlogFile,
+    template: &str,
+    blogs_branch_name: &str,
+    blog_config: &mut BlogConfig,
+) -> io::Result<String> {
+    let (blog_info, rest_of_blog_file) = parse_blog_file_info(&blog_file)?;
+    // make a clone of the global blog config
+    let mut this_blog_info = blog_config.clone();
+    // and then apply the blog information of this blog file
+    // onto the cloned config
+    this_blog_info.apply(blog_info);
+
+    // some validation: title is required, and
+    // we should have at least one entry in the updated blogs timestamps:
+    if this_blog_info.title.is_none() {
+        return Err(new_err(format!("Missing title for blog {}", updated_blog.path_from_root)));
+    }
+    if updated_blog.update_timestamps.is_empty() {
+        return Err(new_err(format!("Failed to find a single commit for blog {}", updated_blog.path_from_root)));
+    }
+
+    // now our 'this_blog_info' contains everything
+    // from the global blog config, and everything in the blog header
+    // but what we probably cant/didnt get from the blog header is:
+    // - description
+    // - sanitized file name
+    // also if we failed to get author's name, or the date strings,
+    // we will get them here via the information we have from git:
+
+    if this_blog_info.description.is_none() {
+        this_blog_info.description = get_description(rest_of_blog_file);
+    }
+    if this_blog_info.blog_file_name.is_none() {
+        this_blog_info.blog_file_name = get_blog_file_name(&this_blog_info.title);
+    }
+    if this_blog_info.author_name.is_none() {
+        this_blog_info.author_name = Some(updated_blog.git_author_name.clone());
+    }
+    if this_blog_info.date_written.is_none() {
+        // the last entry in the array is the first commit
+        let first_update_index = updated_blog.update_timestamps.len() - 1;
+        let first_update = &updated_blog.update_timestamps[first_update_index];
+        this_blog_info.date_written = Some(get_date_string_from_timestamp(*first_update));
+    }
+    if this_blog_info.date_updated.is_none() && updated_blog.update_timestamps.len() > 1 {
+        // the first entry is the most recent commit, ie: latest update
+        let last_update = &updated_blog.update_timestamps[0];
+        this_blog_info.date_updated = Some(get_date_string_from_timestamp(*last_update));
+    }
+
+    // now we should have all the information we need
+    // we first create an html string from the rest of the markdown text
+    // after we removed the blog header:
+    let parser = Parser::new(&rest_of_blog_file);
+    let mut html_out = String::from("");
+    html::push_html(&mut html_out, parser);
+
+    // then we transclude the blog information and the rendered markdown
+    // into the template:
+    let replace_context = this_blog_info.to_hashmap_context();
+    let transcluded = replace_all_from_ex(
+        &template, &replace_context, FailureModeEx::FM_callback(|key| {
+            // TODO: handle cases where we do not have that key
+            key.clone()
+        }), None);
+    Ok(transcluded)
+}
+
+
+pub fn render_blog_to_string(
+    updated_blog: &BlogFile,
+    template: &str,
+    blogs_branch_name: &str,
+    blog_config: &mut BlogConfig,
+) -> io::Result<String> {
+    let blog_file = get_blog_file_from_branch(&updated_blog.path_from_root, &blogs_branch_name)?;
+    let rendered = render_blog_actual(&blog_file, updated_blog, template, blogs_branch_name, blog_config)?;
+    Ok(rendered)
+}
+
 pub fn run_cli(cli: Cli) -> io::Result<()> {
     let git_root = get_git_toplevel_absolute_path()?;
     std::env::set_current_dir(git_root)?;
@@ -342,8 +722,13 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
     };
 
     let updated_blogs = get_all_blog_files_changed_since_last_blog_update(&blogs_branch_name, &main_ref_branch, &cli.blog_file_name)?;
+    let template = get_template(&cli.template_path)?;
+    let mut blog_config = get_blog_config(&cli.blog_config_path)?;
 
-    println!("Here are the blogs that have been updated since: {:?}", updated_blogs);
+    for updated_blog in &updated_blogs {
+        let rendered = render_blog_to_string(updated_blog, &template, &blogs_branch_name, &mut blog_config)?;
+    }
+
     Ok(())
 }
 
@@ -409,5 +794,13 @@ mod tests {
     #[test]
     fn markdowntest1() {
         markdowntest1_actual().unwrap();
+    }
+
+    #[test]
+    fn parse_blog_header_works() {
+        let blog_file = "---\ntitle: hello\n---\nrest of blog file here";
+        let (blog_config, rest_of_blog_file) = parse_blog_file_info(blog_file).unwrap();
+        assert_eq!(blog_config.title, Some("hello".into()));
+        assert_eq!(rest_of_blog_file, "rest of blog file here");
     }
 }
