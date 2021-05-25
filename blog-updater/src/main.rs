@@ -49,7 +49,11 @@ pub struct BlogConfig {
     pub tags: Vec<String>,
     pub date_written: Option<String>,
     pub date_updated: Option<String>,
+    
+    // generated:
     pub blog_file_name: Option<String>,
+    pub published_time_iso: Option<String>,
+    pub modified_time_iso: Option<String>,
 
 
     // these probably only should come from the blog config:
@@ -101,44 +105,59 @@ impl BlogConfig {
         }
     }
 
-    pub fn to_hashmap_context<'a>(&'a self) -> HashMap<&'a str, &'a String> {
+    pub fn to_hashmap_context<'a>(&'a self, markdown: &'a Option<String>) -> HashMap<&'a str, String> {
         let mut context = HashMap::new();
+        if let Some(ref m) = markdown {
+            context.insert("rendered_markdown", m.clone());
+        }
         if let Some(s) = &self.title {
-            context.insert("title", s);
+            context.insert("title", s.clone());
         }
         if let Some(s) = &self.description {
-            context.insert("description", s);
+            context.insert("description", s.clone());
         }
-        // TODO: how to handle tags here?
-        // if !self.tags.is_empty() {
-        //     self.tags = self.tags;
-        // }
+        if !self.tags.is_empty() {
+            let mut meta_tag_str = "".into();
+            for tag in &self.tags {
+                let this_tag = format!("<meta property=\"article:tag\" content=\"{}\">", tag);
+                meta_tag_str = format!("{}{}\n", meta_tag_str, this_tag);
+            }
+            context.insert("meta_tags", meta_tag_str);
+        }
         if let Some(s) = &self.date_written {
-            context.insert("date_written", s);
+            context.insert("date_written", s.clone());
         }
         if let Some(s) = &self.date_updated {
-            context.insert("date_updated", s);
+            context.insert("date_updated", s.clone());
         }
         if let Some(s) = &self.author_name {
-            context.insert("author_name", s);
+            context.insert("author_name", s.clone());
+            let publisher_tag = format!("<meta property=\"article:publisher\" content=\"{}\">", s.clone());
+            context.insert("publisher_tag", publisher_tag);
         }
         if let Some(s) = &self.author_url {
-            context.insert("author_url", s);
+            context.insert("author_url", s.clone());
         }
         if let Some(s) = &self.author_email {
-            context.insert("author_email", s);
+            context.insert("author_email", s.clone());
         }
         if let Some(s) = &self.author_projects_url {
-            context.insert("author_projects_url", s);
+            context.insert("author_projects_url", s.clone());
         }
         if let Some(s) = &self.blog_name {
-            context.insert("blog_name", s);
+            context.insert("blog_name", s.clone());
         }
         if let Some(s) = &self.blog_home_url {
-            context.insert("blog_home_url", s);
+            context.insert("blog_home_url", s.clone());
         }
         if let Some(s) = &self.blog_file_name {
-            context.insert("blog_file_name", s);
+            context.insert("blog_file_name", s.clone());
+        }
+        if let Some(s) = &self.modified_time_iso {
+            context.insert("modified_time_iso", s.clone());
+        }
+        if let Some(s) = &self.published_time_iso {
+            context.insert("published_time_iso", s.clone());
         }
         context
     }
@@ -611,17 +630,62 @@ pub fn get_blog_file_name(title: &Option<String>) -> Option<String> {
     }
 }
 
-pub fn get_date_string_from_timestamp(timestamp: i64) -> String {
+pub fn get_date_string_from_timestamp(timestamp: i64) -> (String, String) {
     let naive = chrono::NaiveDateTime::from_timestamp(timestamp, 0);
     let datetime: chrono::DateTime<chrono::Utc> = chrono::DateTime::from_utc(naive, chrono::Utc);
-    datetime.format("%Y-%m-%d").to_string()
+    let human_date = datetime.format("%B %d, %Y").to_string();
+    let iso = datetime.to_rfc3339().to_string();
+    (human_date, iso)
+}
+
+pub fn get_name_and_date_html(blog_info: &BlogConfig) -> String {
+    let name_url = match &blog_info.author_url {
+        Some(s) => s,
+        None => "#",
+    };
+    let name = match &blog_info.author_name {
+        Some(s) => s,
+        None => "AUTHORNAMENOTFOUND",
+    };
+    let human_date = match &blog_info.date_written {
+        Some(s) => s,
+        None => "DATESTRINGNOTFOUND",
+    };
+    format!("<span style=\"color: #92979b; font-size: 16px\"><a style=\"font-weight: bold; color: #92979b\" href=\"{}\">{}</a> - {}</span>", name_url, name, human_date)
+}
+
+pub fn get_about_me_markdown(blog_info: &BlogConfig) -> String {
+    let mut use_about_me = false;
+    let mut about_me = "About me:\n\n".into();
+
+    if let Some(s) = &blog_info.author_name {
+        about_me = format!("{}> I am {}.<br>\n", about_me, s);
+        use_about_me = true;
+    }
+    if let Some(s) = &blog_info.author_email {
+        about_me = format!("{}> Contact me via email: {}.<br>\n", about_me, s);
+        use_about_me = true;
+    }
+    if let Some(s) = &blog_info.author_projects_url {
+        about_me = format!("{}> Check out my projects: {}.<br>\n", about_me, s);
+        use_about_me = true;
+    }
+    if let Some(s) = &blog_info.blog_home_url {
+        about_me = format!("{}> Check out my other blog posts: {}.<br>\n", about_me, s);
+        use_about_me = true;
+    }
+
+    if use_about_me {
+        about_me
+    } else {
+        "".into()
+    }
 }
 
 pub fn render_blog_actual(
     blog_file: &str,
     updated_blog: &BlogFile,
     template: &str,
-    blogs_branch_name: &str,
     blog_config: &mut BlogConfig,
 ) -> io::Result<String> {
     let (blog_info, rest_of_blog_file) = parse_blog_file_info(&blog_file)?;
@@ -661,28 +725,42 @@ pub fn render_blog_actual(
         // the last entry in the array is the first commit
         let first_update_index = updated_blog.update_timestamps.len() - 1;
         let first_update = &updated_blog.update_timestamps[first_update_index];
-        this_blog_info.date_written = Some(get_date_string_from_timestamp(*first_update));
+        let (human_date, iso_date) = get_date_string_from_timestamp(*first_update);
+        this_blog_info.date_written = Some(human_date);
+        this_blog_info.published_time_iso = Some(iso_date.clone());
+        this_blog_info.modified_time_iso = Some(iso_date);
     }
     if this_blog_info.date_updated.is_none() && updated_blog.update_timestamps.len() > 1 {
         // the first entry is the most recent commit, ie: latest update
         let last_update = &updated_blog.update_timestamps[0];
-        this_blog_info.date_updated = Some(get_date_string_from_timestamp(*last_update));
+        let (human_date, iso_date) = get_date_string_from_timestamp(*last_update);
+        this_blog_info.date_updated = Some(human_date);
+        this_blog_info.modified_time_iso = Some(iso_date);
     }
+
+    // we append some text to the markdown string before we render it
+    // to html. this includes the blog name and date, the title,
+    // and an about me section (depending if user supplied necessary information for about me)
+    let blog_name_and_date = get_name_and_date_html(&this_blog_info);
+    let about_me = get_about_me_markdown(&this_blog_info);
+    let use_title = if let Some(t) = &this_blog_info.title { format!("# {}", t) } else { "# title".into() };
+    let render_this = format!("{}\n{}\n{}\n\n\n{}", use_title, blog_name_and_date, rest_of_blog_file, about_me);
 
     // now we should have all the information we need
     // we first create an html string from the rest of the markdown text
     // after we removed the blog header:
-    let parser = Parser::new(&rest_of_blog_file);
+    let parser = Parser::new(&render_this);
     let mut html_out = String::from("");
     html::push_html(&mut html_out, parser);
 
     // then we transclude the blog information and the rendered markdown
     // into the template:
-    let replace_context = this_blog_info.to_hashmap_context();
+    let markdown_rendered = Some(html_out);
+    let replace_context = this_blog_info.to_hashmap_context(&markdown_rendered);
     let transcluded = replace_all_from_ex(
-        &template, &replace_context, FailureModeEx::FM_callback(|key| {
+        &template, &replace_context, FailureModeEx::FM_callback(|_key| {
             // TODO: handle cases where we do not have that key
-            key.clone()
+            Some("".into())
         }), None);
     Ok(transcluded)
 }
@@ -695,7 +773,7 @@ pub fn render_blog_to_string(
     blog_config: &mut BlogConfig,
 ) -> io::Result<String> {
     let blog_file = get_blog_file_from_branch(&updated_blog.path_from_root, &blogs_branch_name)?;
-    let rendered = render_blog_actual(&blog_file, updated_blog, template, blogs_branch_name, blog_config)?;
+    let rendered = render_blog_actual(&blog_file, updated_blog, template, blog_config)?;
     Ok(rendered)
 }
 
@@ -802,5 +880,33 @@ mod tests {
         let (blog_config, rest_of_blog_file) = parse_blog_file_info(blog_file).unwrap();
         assert_eq!(blog_config.title, Some("hello".into()));
         assert_eq!(rest_of_blog_file, "rest of blog file here");
+    }
+
+    fn markdowntest2_actual() -> io::Result<()> {
+        let data = std::fs::read_to_string("test/m2.md")?;
+        let template = std::fs::read_to_string("templates/default.html")?;
+        let blog_file_info = BlogFile {
+            path_from_root: "doesntmatter".into(),
+            update_timestamps: vec![1621897682],
+            git_author_name: "me".into(),
+        };
+        let mut blog_config = BlogConfig::default();
+        blog_config.tags = vec!["abcxyz".into()];
+        let rendered = render_blog_actual(
+            &data, &blog_file_info, &template, &mut blog_config)?;
+        println!("\n{}\n", rendered);
+
+        let expected_tag = "<meta property=\"article:tag\" content=\"abcxyz\">";
+        assert!(rendered.contains("<title>m2title</title>"));
+        assert!(rendered.contains("description\" content=\"m2description"));
+        assert!(rendered.contains("2021-05-24")); // this is the timestamp above
+        assert!(rendered.contains(expected_tag));
+        assert!(rendered.contains("May 24, 2021")); // this is the human readable one
+        Ok(())
+    }
+
+    #[test]
+    fn markdowntest2() {
+        markdowntest2_actual().unwrap();
     }
 }
