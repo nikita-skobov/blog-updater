@@ -22,22 +22,18 @@ pub struct Cli {
     pub main_branch_name: Option<String>,
 
     /// specify the path to your blog config that should contain things like your blog's name, URL, author's name, etc... if a blog config is not provided, this information can also be provided in the header of the blog file itself
-    pub blog_config_path: Option<PathBuf>,
+    pub blog_config: Option<PathBuf>,
 
     /// specify the path to the html template to use to transpile the rendered markdown into. if not specified, the default template will be used.
-    pub template_path: Option<PathBuf>,
+    pub blog_template: Option<PathBuf>,
     /// specify the path to the html template for the individual blog post links that will later be transcluded into the homepage template
     pub blog_post_link_template: Option<PathBuf>,
     /// specify the path to the html template for the blog homepage template
     pub blog_homepage_template: Option<PathBuf>,
 
-    pub blog_renderer_executable: String,
-    pub homepage_renderer_executable: String,
-    // TODO:
-    // might need to add formatting string for how
-    // options need to be passed to blog_renderer_executable
-    #[options(default = "tmp_blog")]
-    pub rendered_directory: PathBuf,
+    /// the directory where the rendered files will be output to
+    #[options(default = "tmp_blog", short = "o")]
+    pub output: PathBuf,
 
     /// by default, this program will prompt the user with some questions. disable interactive mode if you want to go with the default choices
     pub no_interactive: bool,
@@ -782,8 +778,8 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
     };
 
     let updated_blogs = get_all_blog_files_changed_since_last_blog_update(&blogs_branch_name, &main_ref_branch, &cli.blog_file_name)?;
-    let template = get_template(&cli.template_path)?;
-    let mut blog_config = get_blog_config(&cli.blog_config_path)?;
+    let template = get_template(&cli.blog_template)?;
+    let mut blog_config = get_blog_config(&cli.blog_config)?;
 
     for updated_blog in &updated_blogs {
         let (rendered, _warnings, outfilename) = render_blog_to_string(
@@ -792,7 +788,7 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
         // if !warnings.is_empty() {
         //     eprintln!("Found some warnings while transcluding the markdown text into the html template:\n{}", warnings);
         // }
-        let mut outpath = PathBuf::from(cli.rendered_directory.clone());
+        let mut outpath = PathBuf::from(cli.output.clone());
         if !outpath.exists() {
             std::fs::create_dir_all(&outpath)
                 .map_err(|_| new_err(format!("Failed to create temporary directory: {:?}", outpath)))?;
@@ -821,14 +817,14 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
     // transclude that into the blog homepage html template:
     let blog_homepage_template = get_blog_homepage_template(&cli.blog_homepage_template)?;
     let (rendered_homepage, warnings) = render_blog_homepage(&blog_config, &blog_post_links_html, &blog_homepage_template)?;
-    let mut outpath = PathBuf::from(cli.rendered_directory.clone());
+    let mut outpath = PathBuf::from(cli.output.clone());
     outpath.push("index.html");
     std::fs::write(&outpath, rendered_homepage)
         .map_err(|_| new_err("Failed to write blog homepage"))?;
 
     eprintln!("WARN: The following keys were not found when trying to render the homepage.\nPlease check your homepage to make sure it looks correct. Otherwise, fill in these missing keys in your blog config:\n{}\n", warnings);
     let mut outpath = git_root;
-    outpath.push(cli.rendered_directory.clone());
+    outpath.push(cli.output.clone());
     println!("Successfully created rendered blogs in {:?}", outpath);
 
     Ok(())
