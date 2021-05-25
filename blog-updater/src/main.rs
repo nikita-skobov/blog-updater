@@ -784,6 +784,89 @@ pub fn generate_and_write_rss_file(
     }
 }
 
+pub fn render_and_output_blog_files(
+    blog_template_path: &Option<PathBuf>,
+    blog_config: &mut BlogConfig,
+    main_ref_branch_name: &str,
+    output_path: PathBuf,
+    blog_file_name: &str,
+    blog_branch_name: &str,
+) -> io::Result<()> {
+    let updated_blogs = get_all_blog_files_changed_since_last_blog_update(
+        blog_branch_name, &main_ref_branch_name, blog_file_name)?;
+    let template = get_template(blog_template_path)?;
+
+    for updated_blog in &updated_blogs {
+        let (rendered, _warnings, outfilename) = render_blog_to_string(
+            updated_blog, &template, &main_ref_branch_name, blog_config)?;
+        // TODO: this is kind of verbose.. idk if i want to output this for every blog file...
+        // if !warnings.is_empty() {
+        //     eprintln!("Found some warnings while transcluding the markdown text into the html template:\n{}", warnings);
+        // }
+        let mut outpath = output_path.clone();
+        if !outpath.exists() {
+            std::fs::create_dir_all(&outpath)
+                .map_err(|_| new_err(format!("Failed to create temporary directory: {:?}", outpath)))?;
+        }
+        outpath.push(outfilename);
+        std::fs::write(&outpath, rendered)
+            .map_err(|_| new_err(format!("Failed to write blog file: {:?}", outpath)))?;
+    }
+    Ok(())
+}
+
+pub fn render_and_output_homepage_and_rss(
+    blogpost_link_template: &Option<PathBuf>,
+    blog_homepage_template: &Option<PathBuf>,
+    blog_config: &BlogConfig,
+    main_ref_branch_name: &str,
+    output_path: PathBuf,
+    blog_file_name: &str,
+    no_rss: bool,
+) -> io::Result<()> {
+    let blog_post_link_template = get_blog_post_link_template(&blogpost_link_template)?;
+    let all_tracked_blogfiles = get_all_blog_files_ever(&main_ref_branch_name, blog_file_name)?;
+    let mut blog_post_links_html = "".into();
+    let mut rss_items_xml = "".into();
+    let mut skipping_rss_error_message = if !no_rss { None } else { Some("user requested no RSS".into()) };
+    // TODO: sort these blog files by date updated before iterating
+    // and creating the html for the homepage...
+    for blog_file in &all_tracked_blogfiles {
+        let blog_text = get_blog_file_from_branch(&blog_file.path_from_root, &main_ref_branch_name)?;
+        let (blog_info, _) = get_applied_blog_config(&blog_text, blog_file, &blog_config)?;
+
+        if skipping_rss_error_message.is_none() {
+            match generate_rss_item(&blog_info, &blog_file) {
+                Ok(rss_item_xml_string) => {
+                    rss_items_xml = format!("{}{}\n", rss_items_xml, rss_item_xml_string);
+                }
+                Err(err_msg) => {
+                    skipping_rss_error_message = Some(err_msg);
+                }
+            }
+        }
+
+        // TODO: should log warnings? could be quite verbose...
+        let (blog_post_link, _warnings) = render_blogpost_link(&blog_info, &blog_post_link_template)?;
+        blog_post_links_html = format!("{}{}\n", blog_post_links_html, blog_post_link);
+    }
+    // now we have the html string of the list of blog posts, we will
+    // transclude that into the blog homepage html template:
+    let blog_homepage_template = get_blog_homepage_template(blog_homepage_template)?;
+    let (rendered_homepage, warnings) = render_blog_homepage(&blog_config, &blog_post_links_html, &blog_homepage_template)?;
+    let mut outpath = PathBuf::from(output_path.clone());
+    outpath.push("index.html");
+    std::fs::write(&outpath, rendered_homepage)
+        .map_err(|_| new_err("Failed to write blog homepage"))?;
+
+    eprintln!("WARN: The following keys were not found when trying to render the homepage.\nPlease check your homepage to make sure it looks correct. Otherwise, fill in these missing keys in your blog config:\n{}\n", warnings);
+
+    // now render the RSS (if successful and not skipped)
+    generate_and_write_rss_file(
+        skipping_rss_error_message, &blog_config, &rss_items_xml, output_path.clone());
+    Ok(())
+}
+
 pub fn run_cli(cli: Cli) -> io::Result<()> {
     let git_root = get_git_toplevel_absolute_path()?;
     std::env::set_current_dir(&git_root)?;
@@ -806,69 +889,21 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
         cli.blogs_branch_name
     };
 
-    let updated_blogs = get_all_blog_files_changed_since_last_blog_update(&blogs_branch_name, &main_ref_branch, &cli.blog_file_name)?;
-    let template = get_template(&cli.blog_template)?;
     let mut blog_config = get_blog_config(&cli.blog_config)?;
-
-    for updated_blog in &updated_blogs {
-        let (rendered, _warnings, outfilename) = render_blog_to_string(
-            updated_blog, &template, &main_ref_branch, &mut blog_config)?;
-        // TODO: this is kind of verbose.. idk if i want to output this for every blog file...
-        // if !warnings.is_empty() {
-        //     eprintln!("Found some warnings while transcluding the markdown text into the html template:\n{}", warnings);
-        // }
-        let mut outpath = PathBuf::from(cli.output.clone());
-        if !outpath.exists() {
-            std::fs::create_dir_all(&outpath)
-                .map_err(|_| new_err(format!("Failed to create temporary directory: {:?}", outpath)))?;
-        }
-        outpath.push(outfilename);
-        std::fs::write(&outpath, rendered)
-            .map_err(|_| new_err(format!("Failed to write blog file: {:?}", outpath)))?;
-    }
+    render_and_output_blog_files(
+        &cli.blog_template, &mut blog_config,
+        &main_ref_branch, cli.output.clone(),
+        &cli.blog_file_name, &blogs_branch_name
+    )?;
 
     // now that we rendered the individual blogs that were updated
     // we should find ALL blog files and pass the information from them
     // to create the blog homepage
-    let blog_post_link_template = get_blog_post_link_template(&cli.blog_post_link_template)?;
-    let all_tracked_blogfiles = get_all_blog_files_ever(&main_ref_branch, &cli.blog_file_name)?;
-    let mut blog_post_links_html = "".into();
-    let mut rss_items_xml = "".into();
-    let mut skipping_rss_error_message = if !cli.no_rss { None } else { Some("user requested no RSS".into()) };
-    // TODO: sort these blog files by date updated before iterating
-    // and creating the html for the homepage...
-    for blog_file in &all_tracked_blogfiles {
-        let blog_text = get_blog_file_from_branch(&blog_file.path_from_root, &main_ref_branch)?;
-        let (blog_info, _) = get_applied_blog_config(&blog_text, blog_file, &blog_config)?;
-
-        if skipping_rss_error_message.is_none() {
-            match generate_rss_item(&blog_info, &blog_file) {
-                Ok(rss_item_xml_string) => {
-                    rss_items_xml = format!("{}{}\n", rss_items_xml, rss_item_xml_string);
-                }
-                Err(err_msg) => {
-                    skipping_rss_error_message = Some(err_msg);
-                }
-            }
-        }
-
-        // TODO: should log warnings? could be quite verbose...
-        let (blog_post_link, _warnings) = render_blogpost_link(&blog_info, &blog_post_link_template)?;
-        blog_post_links_html = format!("{}{}\n", blog_post_links_html, blog_post_link);
-    }
-    // now we have the html string of the list of blog posts, we will
-    // transclude that into the blog homepage html template:
-    let blog_homepage_template = get_blog_homepage_template(&cli.blog_homepage_template)?;
-    let (rendered_homepage, warnings) = render_blog_homepage(&blog_config, &blog_post_links_html, &blog_homepage_template)?;
-    let mut outpath = PathBuf::from(cli.output.clone());
-    outpath.push("index.html");
-    std::fs::write(&outpath, rendered_homepage)
-        .map_err(|_| new_err("Failed to write blog homepage"))?;
-
-    eprintln!("WARN: The following keys were not found when trying to render the homepage.\nPlease check your homepage to make sure it looks correct. Otherwise, fill in these missing keys in your blog config:\n{}\n", warnings);
-
-    // now render the RSS (if successful and not skipped)
-    generate_and_write_rss_file(skipping_rss_error_message, &blog_config, &rss_items_xml, cli.output.clone());
+    render_and_output_homepage_and_rss(
+        &cli.blog_post_link_template, &cli.blog_homepage_template,
+        &blog_config, &main_ref_branch, cli.output.clone(),
+        &cli.blog_file_name, cli.no_rss
+    )?;
 
     let mut outpath = git_root;
     outpath.push(cli.output.clone());
