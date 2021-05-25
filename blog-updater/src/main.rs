@@ -70,6 +70,7 @@ pub struct BlogConfig {
     pub author_projects_url: Option<String>,
     pub blog_name: Option<String>,
     pub blog_home_url: Option<String>,
+    pub blog_description: Option<String>,
 }
 
 impl BlogConfig {
@@ -109,6 +110,9 @@ impl BlogConfig {
         }
         if let Some(s) = other.blog_file_name {
             self.blog_file_name = Some(s);
+        }
+        if let Some(s) = other.blog_description {
+            self.blog_description = Some(s);
         }
     }
 
@@ -159,6 +163,9 @@ impl BlogConfig {
         }
         if let Some(s) = &self.blog_file_name {
             context.insert("blog_file_name", s.clone());
+        }
+        if let Some(s) = &self.blog_description {
+            context.insert("blog_description", s.clone());
         }
         if let Some(s) = &self.modified_time_iso {
             context.insert("modified_time_iso", s.clone());
