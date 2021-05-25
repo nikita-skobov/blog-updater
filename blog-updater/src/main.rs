@@ -770,17 +770,17 @@ pub fn render_blog_actual(
 pub fn render_blog_to_string(
     updated_blog: &BlogFile,
     template: &str,
-    blogs_branch_name: &str,
+    main_ref_branch_name: &str,
     blog_config: &mut BlogConfig,
 ) -> io::Result<(String, String, String)> {
-    let blog_file = get_blog_file_from_branch(&updated_blog.path_from_root, &blogs_branch_name)?;
+    let blog_file = get_blog_file_from_branch(&updated_blog.path_from_root, &main_ref_branch_name)?;
     let out = render_blog_actual(&blog_file, updated_blog, template, blog_config)?;
     Ok(out)
 }
 
 pub fn run_cli(cli: Cli) -> io::Result<()> {
     let git_root = get_git_toplevel_absolute_path()?;
-    std::env::set_current_dir(git_root)?;
+    std::env::set_current_dir(&git_root)?;
     let branch_list = get_all_git_branches()?;
     let main_ref_branch = get_main_reference_branch(&cli, &branch_list)?;
 
@@ -806,15 +806,23 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
 
     for updated_blog in &updated_blogs {
         let (rendered, warnings, outfilename) = render_blog_to_string(
-            updated_blog, &template, &blogs_branch_name, &mut blog_config)?;
+            updated_blog, &template, &main_ref_branch, &mut blog_config)?;
         if !warnings.is_empty() {
             eprintln!("Found some warnings while transcluding the markdown text into the html template:\n{}", warnings);
         }
         let mut outpath = PathBuf::from(cli.rendered_directory.clone());
+        if !outpath.exists() {
+            std::fs::create_dir_all(&outpath)
+                .map_err(|_| new_err(format!("Failed to create temporary directory: {:?}", outpath)))?;
+        }
         outpath.push(outfilename);
         std::fs::write(&outpath, rendered)
             .map_err(|_| new_err(format!("Failed to write blog file: {:?}", outpath)))?;
     }
+
+    let mut outpath = git_root;
+    outpath.push(cli.rendered_directory.clone());
+    println!("Successfully created rendered blogs in {:?}", outpath);
 
     Ok(())
 }
