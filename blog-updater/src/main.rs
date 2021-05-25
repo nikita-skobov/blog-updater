@@ -24,8 +24,12 @@ pub struct Cli {
     /// specify the path to your blog config that should contain things like your blog's name, URL, author's name, etc... if a blog config is not provided, this information can also be provided in the header of the blog file itself
     pub blog_config_path: Option<PathBuf>,
 
-    /// specify the html template to use to transpile the rendered markdown into. if not specified, the default template will be used.
+    /// specify the path to the html template to use to transpile the rendered markdown into. if not specified, the default template will be used.
     pub template_path: Option<PathBuf>,
+    /// specify the path to the html template for the individual blog post links that will later be transcluded into the homepage template
+    pub blog_post_link_template: Option<PathBuf>,
+    /// specify the path to the html template for the blog homepage template
+    pub blog_homepage_template: Option<PathBuf>,
 
     pub blog_renderer_executable: String,
     pub homepage_renderer_executable: String,
@@ -344,6 +348,53 @@ pub fn get_main_reference_branch(cli: &Cli, branch_list: &Vec<String>) -> io::Re
     Ok(use_branch.to_owned())
 }
 
+pub fn get_all_blog_files_ever(
+    main_ref_branch_name: &str, blog_file_name: &str,
+) -> io::Result<Vec<BlogFile>> {
+    let all_blog_file_paths = find_all_blog_files_from_git_tracked_files(
+        blog_file_name, main_ref_branch_name)?;
+    let mut out_vec = vec![];
+    for file in &all_blog_file_paths {
+        let updates = get_all_timestamps_of_file_commits(file, main_ref_branch_name)?;
+        let mut blog_file = BlogFile {
+            path_from_root: file.to_owned(),
+            update_timestamps: vec![],
+            git_author_name: "".into(),
+        };
+        for update in &updates {
+            let comma_index = update.find(",")
+                .map_or(Err(new_err("Failed to parse output of git log")), |i| Ok(i))?;
+            let timestamp = &update[0..comma_index];
+            let name = &update[(comma_index + 1)..];
+            let timestamp_parsed = timestamp.parse::<i64>()
+                .map_err(|_| new_err("Failed to parse timestamp from git log"))?;
+            blog_file.update_timestamps.push(timestamp_parsed);
+            if blog_file.git_author_name.is_empty() {
+                blog_file.git_author_name = name.trim_start().trim_end().to_string();
+            }
+        }
+        out_vec.push(blog_file);
+    }
+
+    Ok(out_vec)
+}
+
+pub fn get_blog_post_link_template(template: &Option<PathBuf>) -> io::Result<String> {
+    let default_template = "<div class=\"bloglink\"><a class=\"abloglink\" href=\"${{ blog_home_url | / }}/${{ blog_file_name }}\">${{ date_written }} - ${{ title }}</a></div>";
+    match template {
+        Some(path) => std::fs::read_to_string(path),
+        None => Ok(default_template.to_string())
+    }
+}
+
+pub fn get_blog_homepage_template(template: &Option<PathBuf>) -> io::Result<String> {
+    let default_template = include_str!("../templates/default-homepage.html");
+    match template {
+        Some(path) => std::fs::read_to_string(path),
+        None => Ok(default_template.to_string())
+    }
+}
+
 pub fn get_template(template: &Option<PathBuf>) -> io::Result<String> {
     let default_template = include_str!("../templates/default.html");
     match template {
@@ -556,12 +607,15 @@ pub fn get_about_me_markdown(blog_info: &BlogConfig) -> String {
     }
 }
 
-pub fn render_blog_actual(
-    blog_file: &str,
+/// for a given blog file, read its header
+/// and apply its blog config to the global blog config.
+/// This returned new blog config should have everything
+/// necessary to render a blog
+pub fn get_applied_blog_config<'a>(
+    blog_file: &'a str,
     updated_blog: &BlogFile,
-    template: &str,
-    blog_config: &mut BlogConfig,
-) -> io::Result<(String, String, String)> {
+    blog_config: &BlogConfig,
+) -> io::Result<(BlogConfig, &'a str)> {
     let (blog_info, rest_of_blog_file) = parse_blog_file_info(&blog_file)?;
     // make a clone of the global blog config
     let mut this_blog_info = blog_config.clone();
@@ -612,6 +666,18 @@ pub fn render_blog_actual(
         this_blog_info.modified_time_iso = Some(iso_date);
     }
 
+    Ok((this_blog_info, rest_of_blog_file))
+}
+
+pub fn render_blog_actual(
+    blog_file: &str,
+    updated_blog: &BlogFile,
+    template: &str,
+    blog_config: &mut BlogConfig, // TODO: doesnt need to be mutable
+) -> io::Result<(String, String, String)> {
+    let (this_blog_info, rest_of_blog_file) = get_applied_blog_config(
+        blog_file, updated_blog, blog_config)?;
+
     // we append some text to the markdown string before we render it
     // to html. this includes the blog name and date, the title,
     // and an about me section (depending if user supplied necessary information for about me)
@@ -640,6 +706,40 @@ pub fn render_blog_actual(
     Ok((transcluded, warnings, this_blog_info.blog_file_name.unwrap_or("MISSINGFILEFORSOMEREASON".into())))
 }
 
+pub fn render_blogpost_link(
+    this_post_config: &BlogConfig,
+    template: &str,
+) -> io::Result<(String, String)> {
+    // the empty string would be the markdown content, but thats only used
+    // for rendering the actual blog file, whereas here we are just rendering the html element
+    // for this blog post that will go into the blog homepage.
+    let dumref = Some("".into());
+    let mut warnings: String = "".into();
+    let replace_context = this_post_config.to_hashmap_context(&dumref);
+    let transcluded = replace_all_from_ex(
+        template, &replace_context, FailureModeEx::FM_callback(|key| {
+            warnings.push_str(&format!("{}, ", key));
+            Some("".into())
+        }), None);
+    Ok((transcluded, warnings))
+}
+
+pub fn render_blog_homepage(
+    global_blog_config: &BlogConfig,
+    blog_post_links_html: &str,
+    template: &str
+) -> io::Result<(String, String)> {
+    let dumref = Some("".into());
+    let mut warnings: String = "".into();
+    let mut replace_context = global_blog_config.to_hashmap_context(&dumref);
+    replace_context.insert("blog_post_links_html", blog_post_links_html.into());
+    let transcluded = replace_all_from_ex(
+        template, &replace_context, FailureModeEx::FM_callback(|key| {
+            warnings.push_str(&format!("{}, ", key));
+            Some("".into())
+        }), None);
+    Ok((transcluded, warnings))
+}
 
 pub fn render_blog_to_string(
     updated_blog: &BlogFile,
@@ -679,11 +779,12 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
     let mut blog_config = get_blog_config(&cli.blog_config_path)?;
 
     for updated_blog in &updated_blogs {
-        let (rendered, warnings, outfilename) = render_blog_to_string(
+        let (rendered, _warnings, outfilename) = render_blog_to_string(
             updated_blog, &template, &main_ref_branch, &mut blog_config)?;
-        if !warnings.is_empty() {
-            eprintln!("Found some warnings while transcluding the markdown text into the html template:\n{}", warnings);
-        }
+        // TODO: this is kind of verbose.. idk if i want to output this for every blog file...
+        // if !warnings.is_empty() {
+        //     eprintln!("Found some warnings while transcluding the markdown text into the html template:\n{}", warnings);
+        // }
         let mut outpath = PathBuf::from(cli.rendered_directory.clone());
         if !outpath.exists() {
             std::fs::create_dir_all(&outpath)
@@ -694,6 +795,31 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
             .map_err(|_| new_err(format!("Failed to write blog file: {:?}", outpath)))?;
     }
 
+    // now that we rendered the individual blogs that were updated
+    // we should find ALL blog files and pass the information from them
+    // to create the blog homepage
+    let blog_post_link_template = get_blog_post_link_template(&cli.blog_post_link_template)?;
+    let all_tracked_blogfiles = get_all_blog_files_ever(&main_ref_branch, &cli.blog_file_name)?;
+    let mut blog_post_links_html = "".into();
+    // TODO: sort these blog files by date updated before iterating
+    // and creating the html for the homepage...
+    for blog_file in &all_tracked_blogfiles {
+        let blog_text = get_blog_file_from_branch(&blog_file.path_from_root, &main_ref_branch)?;
+        let (blog_info, _) = get_applied_blog_config(&blog_text, blog_file, &blog_config)?;
+        // TODO: should log warnings? could be quite verbose...
+        let (blog_post_link, _warnings) = render_blogpost_link(&blog_info, &blog_post_link_template)?;
+        blog_post_links_html = format!("{}{}\n", blog_post_links_html, blog_post_link);
+    }
+    // now we have the html string of the list of blog posts, we will
+    // transclude that into the blog homepage html template:
+    let blog_homepage_template = get_blog_homepage_template(&cli.blog_homepage_template)?;
+    let (rendered_homepage, warnings) = render_blog_homepage(&blog_config, &blog_post_links_html, &blog_homepage_template)?;
+    let mut outpath = PathBuf::from(cli.rendered_directory.clone());
+    outpath.push("index.html");
+    std::fs::write(&outpath, rendered_homepage)
+        .map_err(|_| new_err("Failed to write blog homepage"))?;
+
+    eprintln!("WARN: The following keys were not found when trying to render the homepage.\nPlease check your homepage to make sure it looks correct. Otherwise, fill in these missing keys in your blog config:\n{}\n", warnings);
     let mut outpath = git_root;
     outpath.push(cli.rendered_directory.clone());
     println!("Successfully created rendered blogs in {:?}", outpath);

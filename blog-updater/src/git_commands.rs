@@ -1,7 +1,11 @@
 use super::CommandOutput;
+use super::new_err;
 use std::io::prelude::*;
 use std::io;
 use std::path::PathBuf;
+use std::process::Command;
+use std::process::Stdio;
+use io::BufReader;
 
 pub fn get_git_command<T>(
     cmd: &[&str],
@@ -128,4 +132,30 @@ pub fn get_blog_file_from_branch(blog_file_path: &str, branch_name: &str) -> io:
             Ok(cmdout.stdout.clone())
         }
     })
+}
+
+pub fn find_all_blog_files_from_git_tracked_files(
+    blog_name: &str, main_ref_branch_name: &str,
+) -> io::Result<Vec<String>> {
+    // for this one we will use a manual spawn and then loop through the output
+    // to avoid allocating a massive string, because some repositories can have
+    // tons of files.
+    let mut out_vec = vec![];
+    let mut cmd = Command::new("git");
+    cmd.arg("ls-tree").arg("-r").arg(main_ref_branch_name).arg("--name-only");
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::null());
+    cmd.stdin(Stdio::null());
+    let mut child = cmd.spawn()?;
+    let stdout = child.stdout.as_mut()
+        .map_or(Err(new_err("Failed to get git process standard output")), |s| Ok(s))?;
+    let reader = BufReader::new(stdout);
+    for line in reader.lines() {
+        let line = line?;
+        if line.ends_with(blog_name) {
+            out_vec.push(line);
+        }
+    }
+
+    Ok(out_vec)
 }
