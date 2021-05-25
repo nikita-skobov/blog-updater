@@ -12,6 +12,9 @@ use chrono;
 mod git_commands;
 use git_commands::*;
 
+mod rss;
+use rss::*;
+
 #[derive(Debug, Options)]
 pub struct Cli {
     #[options(default = "blogs")]
@@ -37,6 +40,9 @@ pub struct Cli {
 
     /// by default, this program will prompt the user with some questions. disable interactive mode if you want to go with the default choices
     pub no_interactive: bool,
+
+    /// by default, this program will create an RSS xml file. pass --no-rss to disable the creation of an RSS file.
+    pub no_rss: bool,
 }
 
 /// not all of these properties should be in your blog_config
@@ -223,14 +229,16 @@ pub fn get_blog_file_meta_info(
                 updated: 0,
                 git_author_name: "".into(),
             };
+            // the first commit in the list is the most recent update
             if let Some(first_update) = updates.first() {
                 let (timestamp, author_name) = parse_git_update_line(&first_update)?;
                 blog_file.updated = timestamp;
                 blog_file.git_author_name = author_name;
             }
+            // the last commit in the list is the initial commit when it was written
             if let Some(last_update) = updates.last() {
                 let (timestamp, author_name) = parse_git_update_line(&last_update)?;
-                blog_file.updated = timestamp;
+                blog_file.written = timestamp;
                 blog_file.git_author_name = author_name;
             }
             out_vec.push(blog_file);
@@ -745,6 +753,37 @@ pub fn render_blog_to_string(
     Ok(out)
 }
 
+pub fn generate_and_write_rss_file(
+    skipping_rss_error_message: Option<String>,
+    blog_config: &BlogConfig,
+    rss_items_xml: &str,
+    output_path: PathBuf,
+) {
+    match skipping_rss_error_message {
+        Some(err_msg) => {
+            eprintln!("Skipping RSS generation because {}", err_msg);
+        }
+        None => {
+            let dummy_file = BlogFile {
+                path_from_root: "".into(),
+                written: 0,
+                updated: 0,
+                git_author_name: "".into(),
+            };
+            match generate_rss(&blog_config, &dummy_file, &rss_items_xml) {
+                Ok(rss_string) => {
+                    let mut outpath = output_path;
+                    outpath.push(RSS_ENDING);
+                    if let Err(e) = std::fs::write(&outpath, rss_string) {
+                        eprintln!("Failed to write RSS string to file: {}", e);
+                    }
+                }
+                Err(e) => eprintln!("Skipping RSS generation because {}", e)
+            }
+        }
+    }
+}
+
 pub fn run_cli(cli: Cli) -> io::Result<()> {
     let git_root = get_git_toplevel_absolute_path()?;
     std::env::set_current_dir(&git_root)?;
@@ -794,11 +833,25 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
     let blog_post_link_template = get_blog_post_link_template(&cli.blog_post_link_template)?;
     let all_tracked_blogfiles = get_all_blog_files_ever(&main_ref_branch, &cli.blog_file_name)?;
     let mut blog_post_links_html = "".into();
+    let mut rss_items_xml = "".into();
+    let mut skipping_rss_error_message = if !cli.no_rss { None } else { Some("user requested no RSS".into()) };
     // TODO: sort these blog files by date updated before iterating
     // and creating the html for the homepage...
     for blog_file in &all_tracked_blogfiles {
         let blog_text = get_blog_file_from_branch(&blog_file.path_from_root, &main_ref_branch)?;
         let (blog_info, _) = get_applied_blog_config(&blog_text, blog_file, &blog_config)?;
+
+        if skipping_rss_error_message.is_none() {
+            match generate_rss_item(&blog_info, &blog_file) {
+                Ok(rss_item_xml_string) => {
+                    rss_items_xml = format!("{}{}\n", rss_items_xml, rss_item_xml_string);
+                }
+                Err(err_msg) => {
+                    skipping_rss_error_message = Some(err_msg);
+                }
+            }
+        }
+
         // TODO: should log warnings? could be quite verbose...
         let (blog_post_link, _warnings) = render_blogpost_link(&blog_info, &blog_post_link_template)?;
         blog_post_links_html = format!("{}{}\n", blog_post_links_html, blog_post_link);
@@ -813,6 +866,10 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
         .map_err(|_| new_err("Failed to write blog homepage"))?;
 
     eprintln!("WARN: The following keys were not found when trying to render the homepage.\nPlease check your homepage to make sure it looks correct. Otherwise, fill in these missing keys in your blog config:\n{}\n", warnings);
+
+    // now render the RSS (if successful and not skipped)
+    generate_and_write_rss_file(skipping_rss_error_message, &blog_config, &rss_items_xml, cli.output.clone());
+
     let mut outpath = git_root;
     outpath.push(cli.output.clone());
     println!("Successfully created rendered blogs in {:?}", outpath);
