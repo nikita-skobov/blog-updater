@@ -687,7 +687,7 @@ pub fn render_blog_actual(
     updated_blog: &BlogFile,
     template: &str,
     blog_config: &mut BlogConfig,
-) -> io::Result<String> {
+) -> io::Result<(String, String)> {
     let (blog_info, rest_of_blog_file) = parse_blog_file_info(&blog_file)?;
     // make a clone of the global blog config
     let mut this_blog_info = blog_config.clone();
@@ -755,14 +755,15 @@ pub fn render_blog_actual(
 
     // then we transclude the blog information and the rendered markdown
     // into the template:
+    let mut warnings: String = "".into();
     let markdown_rendered = Some(html_out);
     let replace_context = this_blog_info.to_hashmap_context(&markdown_rendered);
     let transcluded = replace_all_from_ex(
-        &template, &replace_context, FailureModeEx::FM_callback(|_key| {
-            // TODO: handle cases where we do not have that key
+        &template, &replace_context, FailureModeEx::FM_callback(|key| {
+            warnings.push_str(&format!("Failed to find key '{}'\n", key));
             Some("".into())
         }), None);
-    Ok(transcluded)
+    Ok((transcluded, warnings))
 }
 
 
@@ -771,10 +772,10 @@ pub fn render_blog_to_string(
     template: &str,
     blogs_branch_name: &str,
     blog_config: &mut BlogConfig,
-) -> io::Result<String> {
+) -> io::Result<(String, String)> {
     let blog_file = get_blog_file_from_branch(&updated_blog.path_from_root, &blogs_branch_name)?;
-    let rendered = render_blog_actual(&blog_file, updated_blog, template, blog_config)?;
-    Ok(rendered)
+    let out = render_blog_actual(&blog_file, updated_blog, template, blog_config)?;
+    Ok(out)
 }
 
 pub fn run_cli(cli: Cli) -> io::Result<()> {
@@ -804,7 +805,11 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
     let mut blog_config = get_blog_config(&cli.blog_config_path)?;
 
     for updated_blog in &updated_blogs {
-        let rendered = render_blog_to_string(updated_blog, &template, &blogs_branch_name, &mut blog_config)?;
+        let (rendered, warnings) = render_blog_to_string(
+            updated_blog, &template, &blogs_branch_name, &mut blog_config)?;
+        if !warnings.is_empty() {
+            eprintln!("Found some warnings while transcluding the markdown text into the html template:\n{}", warnings);
+        }
     }
 
     Ok(())
@@ -892,7 +897,7 @@ mod tests {
         };
         let mut blog_config = BlogConfig::default();
         blog_config.tags = vec!["abcxyz".into()];
-        let rendered = render_blog_actual(
+        let (rendered, _) = render_blog_actual(
             &data, &blog_file_info, &template, &mut blog_config)?;
         println!("\n{}\n", rendered);
 
