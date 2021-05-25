@@ -687,7 +687,7 @@ pub fn render_blog_actual(
     updated_blog: &BlogFile,
     template: &str,
     blog_config: &mut BlogConfig,
-) -> io::Result<(String, String)> {
+) -> io::Result<(String, String, String)> {
     let (blog_info, rest_of_blog_file) = parse_blog_file_info(&blog_file)?;
     // make a clone of the global blog config
     let mut this_blog_info = blog_config.clone();
@@ -763,7 +763,7 @@ pub fn render_blog_actual(
             warnings.push_str(&format!("Failed to find key '{}'\n", key));
             Some("".into())
         }), None);
-    Ok((transcluded, warnings))
+    Ok((transcluded, warnings, this_blog_info.blog_file_name.unwrap_or("MISSINGFILEFORSOMEREASON".into())))
 }
 
 
@@ -772,7 +772,7 @@ pub fn render_blog_to_string(
     template: &str,
     blogs_branch_name: &str,
     blog_config: &mut BlogConfig,
-) -> io::Result<(String, String)> {
+) -> io::Result<(String, String, String)> {
     let blog_file = get_blog_file_from_branch(&updated_blog.path_from_root, &blogs_branch_name)?;
     let out = render_blog_actual(&blog_file, updated_blog, template, blog_config)?;
     Ok(out)
@@ -805,11 +805,15 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
     let mut blog_config = get_blog_config(&cli.blog_config_path)?;
 
     for updated_blog in &updated_blogs {
-        let (rendered, warnings) = render_blog_to_string(
+        let (rendered, warnings, outfilename) = render_blog_to_string(
             updated_blog, &template, &blogs_branch_name, &mut blog_config)?;
         if !warnings.is_empty() {
             eprintln!("Found some warnings while transcluding the markdown text into the html template:\n{}", warnings);
         }
+        let mut outpath = PathBuf::from(cli.rendered_directory.clone());
+        outpath.push(outfilename);
+        std::fs::write(&outpath, rendered)
+            .map_err(|_| new_err(format!("Failed to write blog file: {:?}", outpath)))?;
     }
 
     Ok(())
@@ -897,7 +901,7 @@ mod tests {
         };
         let mut blog_config = BlogConfig::default();
         blog_config.tags = vec!["abcxyz".into()];
-        let (rendered, _) = render_blog_actual(
+        let (rendered, _, _) = render_blog_actual(
             &data, &blog_file_info, &template, &mut blog_config)?;
         println!("\n{}\n", rendered);
 
