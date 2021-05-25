@@ -53,7 +53,7 @@ pub struct BlogConfig {
     // these probably should only come from the blog file:
     pub title: Option<String>,
     pub description: Option<String>,
-    pub tags: Vec<String>,
+    pub tags: Option<Vec<String>>,
     pub date_written: Option<String>,
     pub date_updated: Option<String>,
     
@@ -81,8 +81,8 @@ impl BlogConfig {
         if let Some(s) = other.description {
             self.description = Some(s);
         }
-        if !other.tags.is_empty() {
-            self.tags = other.tags;
+        if let Some(t) = other.tags {
+            self.tags = Some(t);
         }
         if let Some(s) = other.date_written {
             self.date_written = Some(s);
@@ -127,9 +127,9 @@ impl BlogConfig {
         if let Some(s) = &self.description {
             context.insert("description", s.clone());
         }
-        if !self.tags.is_empty() {
+        if let Some(t) = &self.tags {
             let mut meta_tag_str = "".into();
-            for tag in &self.tags {
+            for tag in t {
                 let this_tag = format!("<meta property=\"article:tag\" content=\"{}\">", tag);
                 meta_tag_str = format!("{}{}\n", meta_tag_str, this_tag);
             }
@@ -440,7 +440,7 @@ pub fn parse_blog_header_line(line: &str, blog_config: &mut BlogConfig) {
             for tag in value.split(',') {
                 tags.push(tag.to_string());
             }
-            blog_config.tags = tags;
+            blog_config.tags = Some(tags);
         }
         "author" => {
             blog_config.author_name = Some(value.to_owned());
@@ -915,7 +915,7 @@ mod tests {
             git_author_name: "me".into(),
         };
         let mut blog_config = BlogConfig::default();
-        blog_config.tags = vec!["abcxyz".into()];
+        blog_config.tags = Some(vec!["abcxyz".into()]);
         let (rendered, _, _) = render_blog_actual(
             &data, &blog_file_info, &template, &mut blog_config)?;
         println!("\n{}\n", rendered);
