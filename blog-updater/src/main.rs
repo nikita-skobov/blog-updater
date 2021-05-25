@@ -176,10 +176,8 @@ impl BlogConfig {
 #[derive(Debug)]
 pub struct BlogFile {
     pub path_from_root: String,
-    /// the first element should be the most recent update,
-    /// ie: use this as the blog post's updated time,
-    /// and the last element should be the created at time
-    pub update_timestamps: Vec<i64>,
+    pub written: i64,
+    pub updated: i64,
     pub git_author_name: String,
 }
 
@@ -200,37 +198,54 @@ pub fn new_err<M: AsRef<str>>(message: M) -> io::Error {
     io::Error::new(io::ErrorKind::Other, message.as_ref())
 }
 
-pub fn get_all_blog_files_changed_since_last_blog_update(
-    blog_branch_name: &str, main_ref_branch_name: &str,
+pub fn parse_git_update_line(update: &str) -> io::Result<(i64, String)> {
+    let comma_index = update.find(",")
+        .map_or(Err(new_err("Failed to parse output of git log")), |i| Ok(i))?;
+    let timestamp = &update[0..comma_index];
+    let name = &update[(comma_index + 1)..];
+    let timestamp_parsed = timestamp.parse::<i64>()
+        .map_err(|_| new_err("Failed to parse timestamp from git log"))?;
+    Ok((timestamp_parsed, name.trim_start().trim_end().to_string()))
+}
+
+pub fn get_blog_file_meta_info(
+    files_changed: &Vec<String>,
     blog_file_name: &str,
+    main_ref_branch_name: &str,
 ) -> io::Result<Vec<BlogFile>> {
-    let files_changed = get_all_files_changed_since_last_blog_update(blog_branch_name, main_ref_branch_name)?;
     let mut out_vec = vec![];
-    for file in &files_changed {
+    for file in files_changed {
         if file.ends_with(blog_file_name) {
             let updates = get_all_timestamps_of_file_commits(file, main_ref_branch_name)?;
             let mut blog_file = BlogFile {
                 path_from_root: file.to_owned(),
-                update_timestamps: vec![],
+                written: 0,
+                updated: 0,
                 git_author_name: "".into(),
             };
-            for update in &updates {
-                let comma_index = update.find(",")
-                    .map_or(Err(new_err("Failed to parse output of git log")), |i| Ok(i))?;
-                let timestamp = &update[0..comma_index];
-                let name = &update[(comma_index + 1)..];
-                let timestamp_parsed = timestamp.parse::<i64>()
-                    .map_err(|_| new_err("Failed to parse timestamp from git log"))?;
-                blog_file.update_timestamps.push(timestamp_parsed);
-                if blog_file.git_author_name.is_empty() {
-                    blog_file.git_author_name = name.trim_start().trim_end().to_string();
-                }
+            if let Some(first_update) = updates.first() {
+                let (timestamp, author_name) = parse_git_update_line(&first_update)?;
+                blog_file.updated = timestamp;
+                blog_file.git_author_name = author_name;
+            }
+            if let Some(last_update) = updates.last() {
+                let (timestamp, author_name) = parse_git_update_line(&last_update)?;
+                blog_file.updated = timestamp;
+                blog_file.git_author_name = author_name;
             }
             out_vec.push(blog_file);
         }
     }
 
     Ok(out_vec)
+}
+
+pub fn get_all_blog_files_changed_since_last_blog_update(
+    blog_branch_name: &str, main_ref_branch_name: &str,
+    blog_file_name: &str,
+) -> io::Result<Vec<BlogFile>> {
+    let files_changed = get_all_files_changed_since_last_blog_update(blog_branch_name, main_ref_branch_name)?;
+    get_blog_file_meta_info(&files_changed, blog_file_name, main_ref_branch_name)
 }
 
 pub fn handle_branch_missing(
@@ -356,30 +371,7 @@ pub fn get_all_blog_files_ever(
 ) -> io::Result<Vec<BlogFile>> {
     let all_blog_file_paths = find_all_blog_files_from_git_tracked_files(
         blog_file_name, main_ref_branch_name)?;
-    let mut out_vec = vec![];
-    for file in &all_blog_file_paths {
-        let updates = get_all_timestamps_of_file_commits(file, main_ref_branch_name)?;
-        let mut blog_file = BlogFile {
-            path_from_root: file.to_owned(),
-            update_timestamps: vec![],
-            git_author_name: "".into(),
-        };
-        for update in &updates {
-            let comma_index = update.find(",")
-                .map_or(Err(new_err("Failed to parse output of git log")), |i| Ok(i))?;
-            let timestamp = &update[0..comma_index];
-            let name = &update[(comma_index + 1)..];
-            let timestamp_parsed = timestamp.parse::<i64>()
-                .map_err(|_| new_err("Failed to parse timestamp from git log"))?;
-            blog_file.update_timestamps.push(timestamp_parsed);
-            if blog_file.git_author_name.is_empty() {
-                blog_file.git_author_name = name.trim_start().trim_end().to_string();
-            }
-        }
-        out_vec.push(blog_file);
-    }
-
-    Ok(out_vec)
+    get_blog_file_meta_info(&all_blog_file_paths, blog_file_name, main_ref_branch_name)
 }
 
 pub fn get_blog_post_link_template(template: &Option<PathBuf>) -> io::Result<String> {
@@ -627,11 +619,11 @@ pub fn get_applied_blog_config<'a>(
     this_blog_info.apply(blog_info);
 
     // some validation: title is required, and
-    // we should have at least one entry in the updated blogs timestamps:
+    // we should have at least one entry in the updated blog commits
     if this_blog_info.title.is_none() {
         return Err(new_err(format!("Missing title for blog {}", updated_blog.path_from_root)));
     }
-    if updated_blog.update_timestamps.is_empty() {
+    if updated_blog.written == 0 {
         return Err(new_err(format!("Failed to find a single commit for blog {}", updated_blog.path_from_root)));
     }
 
@@ -653,17 +645,15 @@ pub fn get_applied_blog_config<'a>(
         this_blog_info.author_name = Some(updated_blog.git_author_name.clone());
     }
     if this_blog_info.date_written.is_none() {
-        // the last entry in the array is the first commit
-        let first_update_index = updated_blog.update_timestamps.len() - 1;
-        let first_update = &updated_blog.update_timestamps[first_update_index];
+        let first_update = &updated_blog.written;
         let (human_date, iso_date) = get_date_string_from_timestamp(*first_update);
         this_blog_info.date_written = Some(human_date);
         this_blog_info.published_time_iso = Some(iso_date.clone());
         this_blog_info.modified_time_iso = Some(iso_date);
     }
-    if this_blog_info.date_updated.is_none() && updated_blog.update_timestamps.len() > 1 {
+    if this_blog_info.date_updated.is_none() && updated_blog.updated != 0 {
         // the first entry is the most recent commit, ie: latest update
-        let last_update = &updated_blog.update_timestamps[0];
+        let last_update = &updated_blog.updated;
         let (human_date, iso_date) = get_date_string_from_timestamp(*last_update);
         this_blog_info.date_updated = Some(human_date);
         this_blog_info.modified_time_iso = Some(iso_date);
@@ -907,7 +897,8 @@ mod tests {
         let template = std::fs::read_to_string("templates/default.html")?;
         let blog_file_info = BlogFile {
             path_from_root: "doesntmatter".into(),
-            update_timestamps: vec![1621897682],
+            updated: 1621897682,
+            written: 1621897682,
             git_author_name: "me".into(),
         };
         let mut blog_config = BlogConfig::default();
