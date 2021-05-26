@@ -902,7 +902,38 @@ pub fn render_and_output_homepage_and_rss(
     Ok(())
 }
 
+pub fn make_canon(p: PathBuf) -> io::Result<Option<PathBuf>> {
+    match std::fs::canonicalize(&p) {
+        Ok(canon) => Ok(Some(canon)),
+        Err(e) => {
+            Err(new_err(format!("Failed to get canonical path for {:?}\n{}", p, e)))
+        }
+    }
+}
+
+pub fn set_paths_to_absolute(cli: Cli) -> io::Result<Cli> {
+    let mut cli = cli;
+    if let Some(p) = cli.blog_config {
+        cli.blog_config = make_canon(p)?;
+    }
+    if let Some(p) = cli.blog_template {
+        cli.blog_template = make_canon(p)?;
+    }
+    if let Some(p) = cli.blog_post_link_template {
+        cli.blog_post_link_template = make_canon(p)?;
+    }
+    if let Some(p) = cli.blog_homepage_template {
+        cli.blog_homepage_template = make_canon(p)?;
+    }
+    Ok(cli)
+}
+
 pub fn run_cli(cli: Cli) -> io::Result<()> {
+    // before we change to the repo's root,
+    // we want to reset all the potential paths that the user set
+    // to their absolute paths:
+    let cli = set_paths_to_absolute(cli)?;
+
     let git_root = get_git_toplevel_absolute_path()?;
     std::env::set_current_dir(&git_root)?;
     let branch_list = get_all_git_branches()?;
