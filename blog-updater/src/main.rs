@@ -43,6 +43,12 @@ pub struct Cli {
 
     /// by default, this program will create an RSS xml file. pass --no-rss to disable the creation of an RSS file.
     pub no_rss: bool,
+
+    /// dont update the blogs branch to current head. the default is to ask this in interactive mode. if running with --no-interactive, then default is to NOT update the blogs branch, regardless of this --no-update flag
+    pub no_update: bool,
+
+    /// update the blogs branch to the current head if everything was successful. use this to explicitly update the blogs branch without being asked.
+    pub yes_update: bool,
 }
 
 /// not all of these properties should be in your blog_config
@@ -928,6 +934,66 @@ pub fn set_paths_to_absolute(cli: Cli) -> io::Result<Cli> {
     Ok(cli)
 }
 
+pub fn ask_for_update() -> io::Result<bool> {
+    let yesno = interact::interact_yesno(
+        "\nDo you want to update the blogs branch to the current main reference branch?\nThis will mean the next time you run this program, we will only render the blogs that have changed since this update\n".into()
+    )?;
+    Ok(yesno)
+}
+
+pub fn should_update(
+    yes_update: bool, no_update: bool,
+    no_interactive: bool,
+) -> io::Result<bool> {
+    let should_update = match (yes_update, no_update) {
+        // why would they be both true? why would the user do this...
+        // ok in this case we will ask them interactively, or if cli
+        // is off, we will error
+        (true, true) => {
+            if no_interactive {
+                return Err(new_err("both --yes-update and --no-update are provided. this is invalid in non-interactive mode"));
+            }
+            ask_for_update()?
+        },
+        (true, false) => true,
+        (false, true) => false,
+        (false, false) => {
+            if no_interactive {
+               false 
+            } else {
+                ask_for_update()?
+            }
+        }
+    };
+
+    Ok(should_update)
+}
+
+pub fn perform_blog_branch_update(
+    blogs_branch_name: &str, main_ref_branch: &str,
+) -> io::Result<()> {
+    // ideally we would do: git merge --ff-only
+    // but you can only do that if  you are currently on the branch you wish to merge
+    // which is not always going to be the case. since the blogs branch
+    // is only used as a reference point, we can do something similar to an ff-merge which is
+    // check if it is possible to ff-merge, and if so:
+    // we just delete the branch, and re-make it at the current ref of the main_ref_branch
+    let can_fast_forward = can_blog_branch_be_fast_forwarded(&blogs_branch_name, &main_ref_branch)?;
+    if !can_fast_forward {
+        let err = new_err(format!("Blogs branch {} cannot be fast forwarded up to {}.\nYou should never make commits on the blog branch as its only used as a reference to track which blog posts need to be updated. If you are using the wrong blogs branch, you can pick a different one via --blogs-branch-name", blogs_branch_name, main_ref_branch));
+        return Err(err);
+    }
+    if delete_branch(&blogs_branch_name).is_err() {
+        let err = new_err(format!("Failed to delete blogs branch {}. ", blogs_branch_name));
+        return Err(err);
+    }
+    if make_git_branch(&blogs_branch_name, &main_ref_branch).is_err() {
+        let err = new_err(format!("Failed to set blogs branch {} to current commit of {}.", blogs_branch_name, main_ref_branch));
+        return Err(err);
+    }
+    Ok(())
+}
+
 pub fn run_cli(cli: Cli) -> io::Result<()> {
     // before we change to the repo's root,
     // we want to reset all the potential paths that the user set
@@ -974,6 +1040,12 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
     let mut outpath = git_root;
     outpath.push(cli.output.clone());
     println!("Successfully created rendered blogs in {:?}", outpath);
+
+    let should_update = should_update(cli.yes_update, cli.no_update, cli.no_interactive)?;
+    if should_update {
+        perform_blog_branch_update(&blogs_branch_name, &main_ref_branch)?;
+    }
+
 
     Ok(())
 }

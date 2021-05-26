@@ -134,6 +134,20 @@ pub fn get_blog_file_from_branch(blog_file_path: &str, branch_name: &str) -> io:
     })
 }
 
+pub fn can_blog_branch_be_fast_forwarded(blog_branch_name: &str, main_ref_branch_name: &str) -> io::Result<bool> {
+    let exec_args = [
+        "git", "merge-base", "--is-ancestor", blog_branch_name, main_ref_branch_name
+    ];
+    get_git_command(&exec_args, |cmdout| Ok(cmdout.status == 0))
+}
+
+pub fn delete_branch(branch_name: &str) -> io::Result<bool> {
+    let exec_args = [
+        "git", "branch", "-D", branch_name
+    ];
+    get_git_command(&exec_args, |cmdout| Ok(cmdout.status == 0))
+}
+
 pub fn find_all_blog_files_from_git_tracked_files(
     blog_name: &str, main_ref_branch_name: &str,
 ) -> io::Result<Vec<String>> {
