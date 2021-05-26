@@ -992,6 +992,18 @@ pub fn real_main() -> io::Result<()> {
     Ok(())
 }
 
+// TODO: search for a default blog config, maybe in the .git/ directory?
+// TODO: add interactive generation of blog config file if default not found
+// TODO: add interactive questions after successfully creating blog if desired to update
+// the blogs branch or not
+// TODO: (maybe?) add an option to start a server and serve the generated files?
+// difficulties with this:
+// 1. unless you re-render ALL blogs, you wont be able to use the links in the blog homepage because only the most
+// recent blog posts will actually have been rendered and exist on disk
+// 2. the blog_home_url would need to be some localhost url, or otherwise none of the links would work
+// and that would probably require re-rendering everything.. but I guess if you want
+// a server to visualize it, you probably wouldnt care about that too much?
+
 fn main() {
     if let Err(e) = real_main() {
         eprintln!("Some catostrophic error occurred: {}", e);
