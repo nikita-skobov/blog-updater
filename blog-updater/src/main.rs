@@ -725,15 +725,20 @@ pub fn render_blogpost_link(
     Ok((transcluded, warnings))
 }
 
+/// blog_post_links_html is the html string for all of the blog post links, and
+/// links_html is the html string of all of the links to your various social media
+/// github profile, etc...
 pub fn render_blog_homepage(
     global_blog_config: &BlogConfig,
     blog_post_links_html: &str,
+    links_html: &str,
     template: &str
 ) -> io::Result<(String, String)> {
     let dumref = Some("".into());
     let mut warnings: String = "".into();
     let mut replace_context = global_blog_config.to_hashmap_context(&dumref);
     replace_context.insert("blog_post_links_html", blog_post_links_html.into());
+    replace_context.insert("links_html", links_html.into());
     let transcluded = replace_all_from_ex(
         template, &replace_context, FailureModeEx::FM_callback(|key| {
             warnings.push_str(&format!("{}, ", key));
@@ -782,6 +787,35 @@ pub fn generate_and_write_rss_file(
             }
         }
     }
+}
+
+pub fn get_links_html(blog_config: &BlogConfig) -> String {
+    let mut out_str = "".into();
+    let mut links_list = vec![];
+    let blog_home_url = match &blog_config.blog_home_url {
+        Some(s) => s,
+        None => return out_str,
+    };
+
+    if let Some(s) = &blog_config.author_url {
+        links_list.push((s, "Homepage"));
+    }
+    if let Some(s) = &blog_config.author_projects_url {
+        links_list.push((s, "Code"));
+    }
+    let rss_link = format!("{}/{}", blog_home_url, rss::RSS_ENDING);
+    links_list.push((&rss_link, "RSS"));
+
+    // TODO: how to add user specified links?
+    // easiest answer is for them to just manually edit their
+    // homepage template and to not use the ${{ links_html }} at all
+    // but maybe theres a better way
+    for link in links_list {
+        let link_html = format!("<a href=\"{}\" class=\"link\">{}</a>", link.0, link.1);
+        out_str = format!("{}{}\n", out_str, link_html);
+    }
+
+    out_str
 }
 
 pub fn render_and_output_blog_files(
@@ -850,10 +884,11 @@ pub fn render_and_output_homepage_and_rss(
         let (blog_post_link, _warnings) = render_blogpost_link(&blog_info, &blog_post_link_template)?;
         blog_post_links_html = format!("{}{}\n", blog_post_links_html, blog_post_link);
     }
+    let links_html = get_links_html(&blog_config);
     // now we have the html string of the list of blog posts, we will
     // transclude that into the blog homepage html template:
     let blog_homepage_template = get_blog_homepage_template(blog_homepage_template)?;
-    let (rendered_homepage, warnings) = render_blog_homepage(&blog_config, &blog_post_links_html, &blog_homepage_template)?;
+    let (rendered_homepage, warnings) = render_blog_homepage(&blog_config, &blog_post_links_html, &links_html, &blog_homepage_template)?;
     let mut outpath = PathBuf::from(output_path.clone());
     outpath.push("index.html");
     std::fs::write(&outpath, rendered_homepage)

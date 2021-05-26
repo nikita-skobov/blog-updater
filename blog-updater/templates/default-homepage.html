@@ -87,6 +87,12 @@
             margin-bottom: 1em;
             max-width: 92%;
         }
+        .links {
+            text-align: center;
+        }
+        .link {
+            margin-left: 1em;
+        }
     </style>
 </head>
 <body>
@@ -95,6 +101,9 @@
             <a class="blog-title" href="${{ blog_home_url | # }}">${{ blog_name }}</a>
         </div>
     </header>
+    <p class="links">
+        ${{ links_html }}
+    </p>
     <p class="description">
         ${{ blog_description }}
     </p>
