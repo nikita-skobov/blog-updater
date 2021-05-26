@@ -859,12 +859,12 @@ pub fn render_and_output_homepage_and_rss(
     no_rss: bool,
 ) -> io::Result<()> {
     let blog_post_link_template = get_blog_post_link_template(&blogpost_link_template)?;
-    let all_tracked_blogfiles = get_all_blog_files_ever(&main_ref_branch_name, blog_file_name)?;
+    let mut all_tracked_blogfiles = get_all_blog_files_ever(&main_ref_branch_name, blog_file_name)?;
     let mut blog_post_links_html = "".into();
     let mut rss_items_xml = "".into();
     let mut skipping_rss_error_message = if !no_rss { None } else { Some("user requested no RSS".into()) };
-    // TODO: sort these blog files by date updated before iterating
-    // and creating the html for the homepage...
+
+    all_tracked_blogfiles.sort_by(|a, b| b.written.cmp(&a.written));
     for blog_file in &all_tracked_blogfiles {
         let blog_text = get_blog_file_from_branch(&blog_file.path_from_root, &main_ref_branch_name)?;
         let (blog_info, _) = get_applied_blog_config(&blog_text, blog_file, &blog_config)?;
