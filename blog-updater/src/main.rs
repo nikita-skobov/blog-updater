@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::io::prelude::*;
 use std::{collections::HashMap, io};
 use exechelper::CommandOutput;
-use serde::Deserialize;
+use serde::{Serialize, Deserialize};
 use pulldown_cmark::{Parser, html};
 use context_based_variable_substitution::{ replace_all_from_ex, FailureModeEx };
 use simple_interaction as interact;
@@ -14,6 +14,8 @@ use git_commands::*;
 
 mod rss;
 use rss::*;
+
+pub const DEFAULT_BLOG_CONFIG_NAME: &str = "blogconfig.json";
 
 #[derive(Debug, Options)]
 pub struct Cli {
@@ -56,7 +58,7 @@ pub struct Cli {
 /// however, for convenience Im using the same struct to represent the
 /// blog config as well as the data we get from the blog file itself,
 /// because there is potentially some overlap there.
-#[derive(Deserialize, Debug, Default, Clone)]
+#[derive(Deserialize, Serialize, Debug, Default, Clone)]
 pub struct BlogConfig {
     // these probably should only come from the blog file:
     pub title: Option<String>,
@@ -412,14 +414,90 @@ pub fn get_template(template: &Option<PathBuf>) -> io::Result<String> {
     }
 }
 
-pub fn get_blog_config(path: &Option<PathBuf>) -> io::Result<BlogConfig> {
+pub fn create_blog_config_interactively() -> io::Result<BlogConfig> {
+    let mut config = BlogConfig::default();
+    println!("These are the bare minimum options needed to create a nice looking blog");
+    println!("After filling these in, the blog file will be created for you in the .git/ directory");
+    println!("You can edit that file as you wish. If you do not want to enter some of the options below, you can");
+    println!("Leave them blank, but keep in mind some parts of the generated blog might not look as nice.");
+    let choose_author_name = interact::InteractChoices::choose_word("Author name");
+    config.author_name = Some(interact::interact_word(choose_author_name)?);
+    let choose_blog_name = interact::InteractChoices::choose_word("Blog name");
+    config.blog_name = Some(interact::interact_word(choose_blog_name)?);
+    let choose_blog_home_url = interact::InteractChoices::choose_word("Blog home URL");
+    config.blog_home_url = Some(interact::interact_word(choose_blog_home_url)?);
+    let choose_blog_description = interact::InteractChoices::choose_word("Blog description");
+    config.blog_description = Some(interact::interact_word(choose_blog_description)?);
+    let choose_author_email = interact::InteractChoices::choose_word("Author email");
+    config.author_email = Some(interact::interact_word(choose_author_email)?);
+    let choose_author_url = interact::InteractChoices::choose_word("Author homepage");
+    config.author_url = Some(interact::interact_word(choose_author_url)?);
+    let choose_author_projects_url = interact::InteractChoices::choose_word("Author projects URL (eg: github page)");
+    config.author_projects_url = Some(interact::interact_word(choose_author_projects_url)?);
+
+    // now we want to save that to the file:
+    let blog_config_json = serde_json::to_string_pretty(&config)?;
+    let git_dir = format!(".git{}", std::path::MAIN_SEPARATOR);
+    let mut blog_config_path = PathBuf::from(git_dir);
+    blog_config_path.push(DEFAULT_BLOG_CONFIG_NAME);
+    std::fs::write(blog_config_path, blog_config_json)?;
+
+    Ok(config)
+}
+
+pub fn interactively_ask_about_blog_config() -> io::Result<BlogConfig> {
+    let first_choice = format!("Create a .git/{} file interactively", DEFAULT_BLOG_CONFIG_NAME);
+    let mut choices = interact::InteractChoices::from(&[
+        &first_choice,
+        "Use a default empty blog config",
+        "Exit"][..]
+    );
+    let description = "We failed to find a blog config file in the .git directory.";
+    choices.description = Some(description.to_string());
+    let selected = interact::interact_number(choices)?;
+    if selected == 1 {
+        create_blog_config_interactively()
+    } else if selected == 2 {
+        Ok(BlogConfig::default())
+    } else {
+        Err(new_err("Exiting..."))
+    }
+}
+
+/// it is assumed that this is ran from the root of your
+/// git directory, as such, we can find the:
+/// .git/blogconfig.json file
+pub fn get_blog_config_from_default_location() -> io::Result<BlogConfig> {
+    let git_dir = format!(".git{}", std::path::MAIN_SEPARATOR);
+    let mut search_for = PathBuf::from(git_dir);
+    search_for.push(DEFAULT_BLOG_CONFIG_NAME);
+    let file = std::fs::read_to_string(search_for)?;
+    let obj: BlogConfig = serde_json::from_str(&file)?;
+    Ok(obj)
+}
+
+pub fn get_blog_config(path: &Option<PathBuf>, is_interactive: bool) -> io::Result<BlogConfig> {
     match path {
         Some(p) => {
             let file = std::fs::read_to_string(p)?;
             let obj: BlogConfig = serde_json::from_str(&file)?;
             Ok(obj)
         }
-        None => Ok(BlogConfig::default())
+        // no blog config option provided, try to look
+        // in default location
+        None => match get_blog_config_from_default_location() {
+            Ok(obj) => Ok(obj),
+            // failed to find it, so if in interactive mode, ask user
+            // if they want to create one, or if not interactive, just
+            // return default config
+            Err(_) => match is_interactive {
+                true => interactively_ask_about_blog_config(),
+                false => {
+                    eprintln!("Continuing with default empty blog config");
+                    Ok(BlogConfig::default())
+                }
+            }
+        }
     }
 }
 
@@ -1021,7 +1099,7 @@ pub fn run_cli(cli: Cli) -> io::Result<()> {
         cli.blogs_branch_name
     };
 
-    let mut blog_config = get_blog_config(&cli.blog_config)?;
+    let mut blog_config = get_blog_config(&cli.blog_config, !cli.no_interactive)?;
     render_and_output_blog_files(
         &cli.blog_template, &mut blog_config,
         &main_ref_branch, cli.output.clone(),
@@ -1064,10 +1142,6 @@ pub fn real_main() -> io::Result<()> {
     Ok(())
 }
 
-// TODO: search for a default blog config, maybe in the .git/ directory?
-// TODO: add interactive generation of blog config file if default not found
-// TODO: add interactive questions after successfully creating blog if desired to update
-// the blogs branch or not
 // TODO: (maybe?) add an option to start a server and serve the generated files?
 // difficulties with this:
 // 1. unless you re-render ALL blogs, you wont be able to use the links in the blog homepage because only the most
